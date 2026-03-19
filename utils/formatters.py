@@ -65,17 +65,17 @@ def humanize_duration(seconds: int) -> str:
     if minutes < 60:
         return f"{minutes} {russian_plural(minutes, 'минуту', 'минуты', 'минут')}"
 
-    hours = seconds // 3600
-    if hours < 24 and seconds % 3600 == 0:
-        return f"{hours} {russian_plural(hours, 'час', 'часа', 'часов')}"
+    if seconds % (7 * 86400) == 0:
+        weeks = seconds // (7 * 86400)
+        return f"{weeks} {russian_plural(weeks, 'неделю', 'недели', 'недель')}"
 
-    days = seconds // 86400
-    if days < 7 and seconds % 86400 == 0:
+    if seconds % 86400 == 0:
+        days = seconds // 86400
         return f"{days} {russian_plural(days, 'день', 'дня', 'дней')}"
 
-    weeks = seconds // (7 * 86400)
-    if seconds % (7 * 86400) == 0:
-        return f"{weeks} {russian_plural(weeks, 'неделю', 'недели', 'недель')}"
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} {russian_plural(hours, 'час', 'часа', 'часов')}"
 
     rounded_hours = max(1, round(seconds / 3600))
     return f"{rounded_hours} {russian_plural(rounded_hours, 'час', 'часа', 'часов')}"

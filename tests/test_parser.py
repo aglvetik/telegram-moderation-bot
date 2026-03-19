@@ -101,6 +101,12 @@ class ParserServiceTests(unittest.TestCase):
         self.assertEqual(parsed.duration_seconds, 5 * 86400)
         self.assertEqual(parsed.reason, "спам")
 
+    def test_parse_mute_with_long_duration_above_old_cap(self) -> None:
+        parsed = self.parser.parse("мут @User 90 дней флуд", has_reply=False)
+        self.assertEqual(parsed.explicit_target.username, "User")
+        self.assertEqual(parsed.duration_seconds, 90 * 86400)
+        self.assertEqual(parsed.reason, "флуд")
+
     def test_parse_mute_with_combined_duration(self) -> None:
         parsed = self.parser.parse("мут @User 1 час 30 минут флуд", has_reply=False)
         self.assertEqual(parsed.explicit_target.username, "User")
@@ -186,6 +192,11 @@ class ParserServiceTests(unittest.TestCase):
         parsed = self.parser.parse("бан @User 1 день 2 часа", has_reply=False)
         self.assertEqual(parsed.explicit_target.username, "User")
         self.assertEqual(parsed.duration_seconds, 86400 + 7200)
+
+    def test_parse_timed_ban_with_very_long_duration(self) -> None:
+        parsed = self.parser.parse("бан @User 400 дней", has_reply=False)
+        self.assertEqual(parsed.explicit_target.username, "User")
+        self.assertEqual(parsed.duration_seconds, 400 * 86400)
 
     def test_parse_unban_by_user_id(self) -> None:
         parsed = self.parser.parse("разбан 123456789", has_reply=False)

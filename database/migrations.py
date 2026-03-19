@@ -16,6 +16,13 @@ async def _table_columns(connection: aiosqlite.Connection, table_name: str) -> s
     return {row[1] for row in rows}
 
 
+async def _table_info(connection: aiosqlite.Connection, table_name: str) -> list[tuple]:
+    cursor = await connection.execute(f"PRAGMA table_info({table_name});")
+    rows = await cursor.fetchall()
+    await cursor.close()
+    return rows
+
+
 async def _ensure_column(
     connection: aiosqlite.Connection,
     *,
@@ -26,6 +33,41 @@ async def _ensure_column(
     columns = await _table_columns(connection, table_name)
     if column_name not in columns:
         await connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl};")
+
+
+async def _ensure_active_mutes_nullable_ends_at(connection: aiosqlite.Connection) -> None:
+    info = await _table_info(connection, "active_mutes")
+    if not info:
+        return
+
+    ends_at_column = next((row for row in info if row[1] == "ends_at"), None)
+    if ends_at_column is None or ends_at_column[3] == 0:
+        return
+
+    await connection.execute("ALTER TABLE active_mutes RENAME TO active_mutes_old;")
+    await connection.execute(
+        """
+        CREATE TABLE active_mutes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            ends_at TEXT,
+            reason TEXT,
+            moderator_user_id INTEGER,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+        );
+        """
+    )
+    await connection.execute(
+        """
+        INSERT INTO active_mutes(id, chat_id, user_id, started_at, ends_at, reason, moderator_user_id, is_active)
+        SELECT id, chat_id, user_id, started_at, ends_at, reason, moderator_user_id, is_active
+        FROM active_mutes_old;
+        """
+    )
+    await connection.execute("DROP TABLE active_mutes_old;")
 
 
 async def run_migrations(database: Database) -> None:
@@ -136,7 +178,7 @@ async def run_migrations(database: Database) -> None:
                 chat_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 started_at TEXT NOT NULL,
-                ends_at TEXT NOT NULL,
+                ends_at TEXT,
                 reason TEXT,
                 moderator_user_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -144,6 +186,7 @@ async def run_migrations(database: Database) -> None:
             );
             """
         )
+        await _ensure_active_mutes_nullable_ends_at(connection)
         await connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_active_mutes_single_active

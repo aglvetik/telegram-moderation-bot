@@ -160,7 +160,7 @@ class ActiveMuteRecord:
     chat_id: int
     user_id: int
     started_at: datetime
-    ends_at: datetime
+    ends_at: datetime | None
     reason: str | None
     moderator_user_id: int | None
     is_active: bool
@@ -172,7 +172,7 @@ class ActiveMuteRecord:
             chat_id=row["chat_id"],
             user_id=row["user_id"],
             started_at=from_iso(row["started_at"]) or datetime.utcnow(),
-            ends_at=from_iso(row["ends_at"]) or datetime.utcnow(),
+            ends_at=from_iso(row.get("ends_at")),
             reason=row["reason"],
             moderator_user_id=row["moderator_user_id"],
             is_active=bool(row["is_active"]),

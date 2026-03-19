@@ -57,6 +57,12 @@ class MessageServiceTests(unittest.TestCase):
     def test_punishment_result_messages_are_not_auto_deleted(self) -> None:
         self.assertIsNone(self.service.delete_delay_for_category(MessageCategory.MODERATION_RESULT))
 
+    def test_permanent_mute_messages_use_bessrochno(self) -> None:
+        mute_text = self.service.mute_success(self.user, self.user, None, "Причина не указана")
+        self.assertIn("бессрочно", mute_text)
+        already_text = self.service.mute_already_active(self.user, None)
+        self.assertIn("бессрочно", already_text)
+
     def test_private_start_message_matches_expected_sections(self) -> None:
         text = self.service.private_start()
         self.assertIn("🤖 <b>Привет! Я — бот модерации для Telegram-групп.</b>", text)
@@ -107,11 +113,10 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("❌ <b>Боту не хватает прав для выполнения этого действия.</b>", self.service.bot_lacks_rights())
         self.assertEqual(self.service.target_is_bot(), "❌ Нельзя применять это действие к самому боту.")
         self.assertEqual(self.service.target_is_self(), "❌ Нельзя применять это действие к самому себе.")
-        self.assertIn("У пользователя более высокий уровень модерации.", self.service.target_higher_level())
-        self.assertEqual(
-            self.service.target_equal_level(),
-            "❌ Нельзя применять действие к пользователю с таким же уровнем модерации.",
-        )
+        expected_hierarchy_text = "❌ Нельзя применить действие к пользователю с таким же или более высоким уровнем."
+        self.assertEqual(self.service.target_higher_level(), expected_hierarchy_text)
+        self.assertEqual(self.service.target_equal_level(), expected_hierarchy_text)
+        self.assertEqual(self.service.target_same_or_higher_level(), expected_hierarchy_text)
         self.assertEqual(
             self.service.target_admin_protected(),
             "❌ Невозможно выполнить действие.\nЭтот пользователь является администратором.",

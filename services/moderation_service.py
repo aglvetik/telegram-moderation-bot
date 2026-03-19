@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
@@ -17,8 +17,13 @@ from database.repositories.punishments_repo import PunishmentsRepository
 from database.repositories.users_repo import UsersRepository
 from services.message_service import MessageService
 from services.user_resolution_service import ResolvedUser
-from utils.constants import DEFAULT_MUTE_DURATION_SECONDS, MessageCategory
-from utils.exceptions import DatabaseOperationError
+from utils.constants import (
+    DEFAULT_MUTE_DURATION_SECONDS,
+    MessageCategory,
+    TELEGRAM_FOREVER_WINDOW_MAX_SECONDS,
+    TELEGRAM_FOREVER_WINDOW_MIN_SECONDS,
+)
+from utils.exceptions import DatabaseOperationError, PermissionDeniedError
 from utils.formatters import to_iso, utc_now
 from utils.telegram_helpers import (
     build_restrictive_permissions,
@@ -35,6 +40,13 @@ class ActionResult:
     message: str
     category: MessageCategory = MessageCategory.MODERATION_RESULT
     delete_command: bool = True
+
+
+@dataclass(slots=True)
+class RestrictionWindow:
+    duration_seconds: int | None
+    ends_at: datetime | None
+    is_permanent: bool
 
 
 class ModerationService:
@@ -68,13 +80,14 @@ class ModerationService:
         duration_seconds: int,
         reason: str | None,
     ) -> ActionResult:
+        await self._ensure_hierarchy_allowed(chat_id=chat_id, moderator_user_id=moderator.user_id, target_user_id=target.user_id)
         reason = ensure_reason_length(reason)
         duration_seconds = duration_seconds or DEFAULT_MUTE_DURATION_SECONDS
         now = utc_now()
-        until = now + timedelta(seconds=duration_seconds)
+        restriction = self._build_restriction_window(now=now, duration_seconds=duration_seconds)
         existing = await self.mutes_repo.get_active_mute(chat_id, target.user_id)
-        if existing and existing.ends_at > now:
-            remaining = int((existing.ends_at - now).total_seconds())
+        if existing and (existing.ends_at is None or existing.ends_at > now):
+            remaining = None if existing.ends_at is None else int((existing.ends_at - now).total_seconds())
             return ActionResult(
                 message=self.message_service.mute_already_active(target, remaining),
                 category=MessageCategory.TRANSIENT_SERVICE,
@@ -86,7 +99,7 @@ class ModerationService:
                 chat_id=chat_id,
                 user_id=target.user_id,
                 permissions=build_restrictive_permissions(),
-                until_date=until,
+                until_date=restriction.ends_at,
             ),
             logger=self.logger,
             retry=self.config.retry,
@@ -115,7 +128,7 @@ class ModerationService:
                     chat_id=chat_id,
                     user_id=target.user_id,
                     started_at=now,
-                    ends_at=until,
+                    ends_at=restriction.ends_at,
                     reason=reason,
                     moderator_user_id=moderator.user_id,
                     connection=connection,
@@ -130,8 +143,8 @@ class ModerationService:
                     moderator_display_name=moderator.display_name,
                     action_type=ActionType.MUTE.value,
                     reason=reason,
-                    duration_seconds=duration_seconds,
-                    mute_until=to_iso(until),
+                    duration_seconds=restriction.duration_seconds,
+                    mute_until=to_iso(restriction.ends_at),
                     is_active=True,
                     extra_data_json=None,
                     connection=connection,
@@ -139,7 +152,7 @@ class ModerationService:
         except sqlite3.IntegrityError:
             existing = await self.mutes_repo.get_active_mute(chat_id, target.user_id)
             if existing:
-                remaining = int((existing.ends_at - utc_now()).total_seconds())
+                remaining = None if existing.ends_at is None else int((existing.ends_at - utc_now()).total_seconds())
                 return ActionResult(
                     message=self.message_service.mute_already_active(target, remaining),
                     category=MessageCategory.TRANSIENT_SERVICE,
@@ -150,9 +163,10 @@ class ModerationService:
             await self._compensate_unmute(bot=bot, chat_id=chat_id, user_id=target.user_id)
             raise DatabaseOperationError("❌ Не удалось сохранить действие в базе данных. Ограничение было отменено.") from exc
 
-        return ActionResult(message=self.message_service.mute_success(target, moderator, duration_seconds, reason))
+        return ActionResult(message=self.message_service.mute_success(target, moderator, restriction.duration_seconds, reason))
 
     async def unmute(self, *, bot: Bot, chat_id: int, moderator: ResolvedUser, target: ResolvedUser) -> ActionResult:
+        await self._ensure_hierarchy_allowed(chat_id=chat_id, moderator_user_id=moderator.user_id, target_user_id=target.user_id)
         existing = await self.mutes_repo.get_active_mute(chat_id, target.user_id)
 
         await call_with_retry(
@@ -201,7 +215,7 @@ class ModerationService:
                     connection=connection,
                 )
         except Exception as exc:
-            if existing and existing.ends_at > utc_now():
+            if existing and (existing.ends_at is None or existing.ends_at > utc_now()):
                 await self._compensate_remute(bot=bot, chat_id=chat_id, user_id=target.user_id, ends_at=existing.ends_at)
             raise DatabaseOperationError("❌ Не удалось обновить базу данных после снятия мута.") from exc
 
@@ -216,6 +230,7 @@ class ModerationService:
         target: ResolvedUser,
         reason: str | None,
     ) -> ActionResult:
+        await self._ensure_hierarchy_allowed(chat_id=chat_id, moderator_user_id=moderator.user_id, target_user_id=target.user_id)
         reason = ensure_reason_length(reason)
         await call_with_retry(
             lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id),
@@ -270,6 +285,7 @@ class ModerationService:
         duration_seconds: int | None,
         reason: str | None,
     ) -> ActionResult:
+        await self._ensure_hierarchy_allowed(chat_id=chat_id, moderator_user_id=moderator.user_id, target_user_id=target.user_id)
         reason = ensure_reason_length(reason)
         now = utc_now()
         existing = await self.bans_repo.get_active_ban(chat_id, target.user_id)
@@ -283,11 +299,15 @@ class ModerationService:
                 delete_command=False,
             )
 
-        ends_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
-        if ends_at is None:
+        restriction = self._build_restriction_window(now=now, duration_seconds=duration_seconds)
+        if restriction.ends_at is None:
             ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id)
         else:
-            ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id, until_date=ends_at)
+            ban_operation = lambda: bot.ban_chat_member(
+                chat_id=chat_id,
+                user_id=target.user_id,
+                until_date=restriction.ends_at,
+            )
         await call_with_retry(
             ban_operation,
             logger=self.logger,
@@ -309,7 +329,7 @@ class ModerationService:
                     chat_id=chat_id,
                     user_id=target.user_id,
                     banned_at=now,
-                    ends_at=ends_at,
+                    ends_at=restriction.ends_at,
                     reason=reason,
                     moderator_user_id=moderator.user_id,
                     connection=connection,
@@ -330,8 +350,8 @@ class ModerationService:
                     moderator_display_name=moderator.display_name,
                     action_type=ActionType.BAN.value,
                     reason=reason,
-                    duration_seconds=duration_seconds,
-                    mute_until=to_iso(ends_at),
+                    duration_seconds=restriction.duration_seconds,
+                    mute_until=to_iso(restriction.ends_at),
                     is_active=True,
                     extra_data_json=None,
                     connection=connection,
@@ -349,6 +369,7 @@ class ModerationService:
         return ActionResult(message=self.message_service.ban_success(target, moderator))
 
     async def unban(self, *, bot: Bot, chat_id: int, moderator: ResolvedUser, target: ResolvedUser) -> ActionResult:
+        await self._ensure_hierarchy_allowed(chat_id=chat_id, moderator_user_id=moderator.user_id, target_user_id=target.user_id)
         existing = await self.bans_repo.get_active_ban(chat_id, target.user_id)
         await call_with_retry(
             lambda: bot.unban_chat_member(chat_id=chat_id, user_id=target.user_id, only_if_banned=True),
@@ -397,7 +418,7 @@ class ModerationService:
         return ActionResult(message=self.message_service.unban_success(target))
 
     async def get_user_info_message(self, *, chat_id: int, target: ResolvedUser) -> str:
-        level = await self._get_level(chat_id, target.user_id)
+        level = await self._get_public_level(chat_id, target.user_id)
         active_mute = await self.mutes_repo.get_active_mute(chat_id, target.user_id)
         active_ban = await self.bans_repo.get_active_ban(chat_id, target.user_id)
         return self.message_service.user_info(target, level=level, active_mute=active_mute, active_ban=active_ban is not None)
@@ -463,7 +484,7 @@ class ModerationService:
             )
 
     async def verify_active_mute(self, *, bot: Bot, mute: ActiveMuteRecord) -> None:
-        if mute.ends_at <= utc_now():
+        if mute.ends_at is not None and mute.ends_at <= utc_now():
             await self.expire_mute(bot=bot, mute=mute)
             return
 
@@ -540,9 +561,45 @@ class ModerationService:
         except Exception:
             self.logger.exception("Failed to compensate unban rollback for user %s in chat %s", user_id, chat_id)
 
-    async def _get_level(self, chat_id: int, user_id: int) -> int:
-        row = await self.database.fetchone(
-            "SELECT admin_level FROM admin_levels WHERE chat_id = ? AND user_id = ?;",
-            (chat_id, user_id),
+    def _build_restriction_window(self, *, now: datetime, duration_seconds: int | None) -> RestrictionWindow:
+        if duration_seconds is None:
+            return RestrictionWindow(duration_seconds=None, ends_at=None, is_permanent=True)
+        if duration_seconds < TELEGRAM_FOREVER_WINDOW_MIN_SECONDS:
+            return RestrictionWindow(duration_seconds=None, ends_at=None, is_permanent=True)
+        if duration_seconds > TELEGRAM_FOREVER_WINDOW_MAX_SECONDS:
+            return RestrictionWindow(duration_seconds=None, ends_at=None, is_permanent=True)
+        return RestrictionWindow(
+            duration_seconds=duration_seconds,
+            ends_at=now + timedelta(seconds=duration_seconds),
+            is_permanent=False,
         )
-        return int(row["admin_level"]) if row else 0
+
+    async def _get_public_level(self, chat_id: int, user_id: int) -> int:
+        row = await self.database.fetchone(
+            """
+            SELECT
+                COALESCE(a.admin_level, 0) AS admin_level,
+                c.owner_user_id AS owner_user_id
+            FROM chats c
+            LEFT JOIN admin_levels a ON a.chat_id = c.chat_id AND a.user_id = ?
+            WHERE c.chat_id = ?;
+            """,
+            (user_id, chat_id),
+        )
+        if row is None:
+            return 0
+        stored_level = int(row["admin_level"])
+        if row["owner_user_id"] == user_id:
+            return max(stored_level, 5)
+        return stored_level
+
+    async def _get_effective_level(self, chat_id: int, user_id: int) -> int:
+        if self.config.system_owner_user_id is not None and user_id == self.config.system_owner_user_id:
+            return 5
+        return await self._get_public_level(chat_id, user_id)
+
+    async def _ensure_hierarchy_allowed(self, *, chat_id: int, moderator_user_id: int, target_user_id: int) -> None:
+        caller_level = await self._get_effective_level(chat_id, moderator_user_id)
+        target_level = await self._get_public_level(chat_id, target_user_id)
+        if target_level >= caller_level:
+            raise PermissionDeniedError(self.message_service.target_same_or_higher_level())

@@ -38,9 +38,15 @@ class PermissionService:
         self.system_owner_user_id = system_owner_user_id
 
     async def get_level(self, chat_id: int, user_id: int) -> int:
-        return await self._get_effective_level(chat_id, user_id)
+        return await self._get_public_level(chat_id, user_id)
 
     async def get_my_level(self, chat_id: int, user: User) -> int:
+        return await self._get_public_level(chat_id, user.id)
+
+    async def get_effective_level(self, chat_id: int, user_id: int) -> int:
+        return await self._get_effective_level(chat_id, user_id)
+
+    async def get_my_effective_level(self, chat_id: int, user: User) -> int:
         return await self._get_effective_level(chat_id, user.id)
 
     async def ensure_moderation_allowed(
@@ -57,7 +63,7 @@ class PermissionService:
         await self._ensure_bot_can_do_action(bot, chat_id, action)
         # System-owner level 5 is an authorization override for the caller only.
         # It must not create moderation immunity when that user is the target.
-        target_level = await self._get_stored_level(chat_id, target.user_id)
+        target_level = await self._get_public_level(chat_id, target.user_id)
         chat_record = await self.chats_repo.get_chat(chat_id)
 
         if target.user_id == actor.id:
@@ -66,10 +72,8 @@ class PermissionService:
             raise PermissionDeniedError(self.message_service.target_is_bot())
         if chat_record and chat_record.owner_user_id == target.user_id:
             raise PermissionDeniedError(self.message_service.target_is_owner())
-        if target_level > caller_level:
-            raise PermissionDeniedError(self.message_service.target_higher_level())
-        if target_level == caller_level and target_level > 0:
-            raise PermissionDeniedError(self.message_service.target_equal_level())
+        if target_level >= caller_level:
+            raise PermissionDeniedError(self.message_service.target_same_or_higher_level())
         if target.member and is_admin_member(target.member):
             raise PermissionDeniedError(self.message_service.target_admin_protected())
         if action in {"mute", "unmute", "kick"} and target.member is None:
@@ -103,11 +107,9 @@ class PermissionService:
             chat_record = await self.chats_repo.get_chat(chat_id)
             if chat_record and chat_record.owner_user_id == target.user_id:
                 raise PermissionDeniedError(self.message_service.target_is_owner())
-            target_level = await self._get_effective_level(chat_id, target.user_id)
-            if target_level > caller_level:
-                raise PermissionDeniedError(self.message_service.target_higher_level())
-            if target_level == caller_level and target_level > 0:
-                raise PermissionDeniedError(self.message_service.target_equal_level())
+            target_level = await self._get_public_level(chat_id, target.user_id)
+            if target_level >= caller_level:
+                raise PermissionDeniedError(self.message_service.target_same_or_higher_level())
         return caller_level, target_level
 
     async def mutate_level(
@@ -126,7 +128,7 @@ class PermissionService:
             actor=actor,
             target=target,
         )
-        current_level = await self._get_effective_level(chat_id, target.user_id)
+        current_level = await self._get_public_level(chat_id, target.user_id)
         new_level = self.resolve_requested_level(
             actor_level=caller_level,
             current_level=current_level,
@@ -262,7 +264,14 @@ class PermissionService:
     async def _get_effective_level(self, chat_id: int, user_id: int) -> int:
         if self.is_system_owner(user_id):
             return 5
-        return await self._get_stored_level(chat_id, user_id)
+        return await self._get_public_level(chat_id, user_id)
+
+    async def _get_public_level(self, chat_id: int, user_id: int) -> int:
+        stored_level = await self._get_stored_level(chat_id, user_id)
+        chat_record = await self.chats_repo.get_chat(chat_id)
+        if chat_record and chat_record.owner_user_id == user_id:
+            return max(stored_level, 5)
+        return stored_level
 
     async def _get_stored_level(self, chat_id: int, user_id: int) -> int:
         return await self.admin_levels_repo.get_level(chat_id, user_id)

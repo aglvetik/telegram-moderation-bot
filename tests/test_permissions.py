@@ -205,6 +205,146 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result[0], 4)
 
+    async def test_level_two_cannot_mute_level_three(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=30, admin_level=2, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=31, admin_level=3, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                30: make_member(30, status=ChatMemberStatus.MEMBER),
+                31: make_member(31, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await self.permission_service.ensure_moderation_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=30, username="lvl2", first_name="Lvl2", last_name=None),
+                target=ResolvedUser(user_id=31, username="lvl3", display_name="Lvl3", member=make_member(31, status=ChatMemberStatus.MEMBER)),
+                action="mute",
+            )
+
+    async def test_level_three_cannot_mute_level_four(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=32, admin_level=3, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=33, admin_level=4, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                32: make_member(32, status=ChatMemberStatus.MEMBER),
+                33: make_member(33, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await self.permission_service.ensure_moderation_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=32, username="lvl3", first_name="Lvl3", last_name=None),
+                target=ResolvedUser(user_id=33, username="lvl4", display_name="Lvl4", member=make_member(33, status=ChatMemberStatus.MEMBER)),
+                action="mute",
+            )
+
+    async def test_level_four_cannot_mute_same_level_four(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=34, admin_level=4, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=35, admin_level=4, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                34: make_member(34, status=ChatMemberStatus.MEMBER),
+                35: make_member(35, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await self.permission_service.ensure_moderation_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=34, username="lvl4", first_name="Lvl4", last_name=None),
+                target=ResolvedUser(user_id=35, username="lvl4b", display_name="Lvl4b", member=make_member(35, status=ChatMemberStatus.MEMBER)),
+                action="mute",
+            )
+
+    async def test_level_four_cannot_mute_level_five(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=36, admin_level=4, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=37, admin_level=5, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                36: make_member(36, status=ChatMemberStatus.MEMBER),
+                37: make_member(37, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await self.permission_service.ensure_moderation_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=36, username="lvl4", first_name="Lvl4", last_name=None),
+                target=ResolvedUser(user_id=37, username="lvl5", display_name="Lvl5", member=make_member(37, status=ChatMemberStatus.MEMBER)),
+                action="mute",
+            )
+
+    async def test_level_five_cannot_sanction_another_level_five(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=38, admin_level=5, granted_by_user_id=None)
+        owner_service = PermissionService(
+            database=self.database,
+            admin_levels_repo=self.admin_levels_repo,
+            chats_repo=self.chats_repo,
+            punishments_repo=self.punishments_repo,
+            users_repo=self.users_repo,
+            message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
+            system_owner_user_id=5300889569,
+        )
+        bot = FakeBot(
+            {
+                5300889569: make_member(5300889569, status=ChatMemberStatus.MEMBER),
+                38: make_member(38, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await owner_service.ensure_moderation_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=5300889569, username="owner", first_name="System", last_name="Owner"),
+                target=ResolvedUser(user_id=38, username="lvl5", display_name="Lvl5", member=make_member(38, status=ChatMemberStatus.MEMBER)),
+                action="ban",
+            )
+
+    async def test_valid_hierarchy_action_still_works(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=39, admin_level=4, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=40, admin_level=3, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                39: make_member(39, status=ChatMemberStatus.MEMBER),
+                40: make_member(40, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        result = await self.permission_service.ensure_moderation_allowed(
+            bot=bot,
+            chat_id=self.chat_id,
+            actor=SimpleNamespace(id=39, username="lvl4", first_name="Lvl4", last_name=None),
+            target=ResolvedUser(user_id=40, username="lvl3", display_name="Lvl3", member=make_member(40, status=ChatMemberStatus.MEMBER)),
+            action="ban",
+        )
+        self.assertEqual(result, (4, 3))
+
+    async def test_level_changes_also_respect_strict_hierarchy(self) -> None:
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=41, admin_level=4, granted_by_user_id=None)
+        await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=42, admin_level=4, granted_by_user_id=None)
+        bot = FakeBot(
+            {
+                41: make_member(41, status=ChatMemberStatus.MEMBER),
+                42: make_member(42, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "таким же или более высоким уровнем"):
+            await self.permission_service.ensure_manage_levels_allowed(
+                bot=bot,
+                chat_id=self.chat_id,
+                actor=SimpleNamespace(id=41, username="lvl4", first_name="Lvl4", last_name=None),
+                target=ResolvedUser(user_id=42, username="lvl4b", display_name="Lvl4b"),
+            )
+
     async def test_bot_rights_are_still_required(self) -> None:
         await self.admin_levels_repo.set_level(chat_id=self.chat_id, user_id=13, admin_level=2, granted_by_user_id=None)
         bot = FakeBot(
@@ -223,7 +363,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 action="mute",
             )
 
-    async def test_system_owner_always_has_level_five_across_chats(self) -> None:
+    async def test_system_owner_always_has_effective_level_five_across_chats(self) -> None:
         owner_service = PermissionService(
             database=self.database,
             admin_levels_repo=self.admin_levels_repo,
@@ -240,8 +380,27 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             title="Other chat",
             settings={},
         )
-        self.assertEqual(await owner_service.get_level(self.chat_id, 5300889569), 5)
-        self.assertEqual(await owner_service.get_level(other_chat_id, 5300889569), 5)
+        self.assertEqual(await owner_service.get_effective_level(self.chat_id, 5300889569), 5)
+        self.assertEqual(await owner_service.get_effective_level(other_chat_id, 5300889569), 5)
+
+    async def test_system_owner_public_level_does_not_leak_hidden_five(self) -> None:
+        owner_service = PermissionService(
+            database=self.database,
+            admin_levels_repo=self.admin_levels_repo,
+            chats_repo=self.chats_repo,
+            punishments_repo=self.punishments_repo,
+            users_repo=self.users_repo,
+            message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
+            system_owner_user_id=5300889569,
+        )
+        self.assertEqual(await owner_service.get_my_level(self.chat_id, SimpleNamespace(id=5300889569)), 0)
+        self.assertEqual(await owner_service.get_effective_level(self.chat_id, 5300889569), 5)
+
+    async def test_real_chat_owner_has_public_and_effective_level_five(self) -> None:
+        await self.chats_repo.update_owner(self.chat_id, 77)
+        self.assertEqual(await self.permission_service.get_level(self.chat_id, 77), 5)
+        self.assertEqual(await self.permission_service.get_my_level(self.chat_id, SimpleNamespace(id=77)), 5)
+        self.assertEqual(await self.permission_service.get_effective_level(self.chat_id, 77), 5)
 
     async def test_system_owner_permission_override_works_without_db_assignment(self) -> None:
         owner_service = PermissionService(

@@ -104,34 +104,102 @@ class ChatService:
 
         async with self.database.transaction() as connection:
             for user_id, username, display_name, first_name, last_name, status in admin_users:
-                await self.users_repo.upsert_user(
+                await self._apply_member_role(
+                    chat_id=chat_id,
                     user_id=user_id,
                     username=username,
                     display_name=display_name,
                     first_name=first_name,
                     last_name=last_name,
-                    last_seen_chat_id=chat_id,
+                    status=status,
                     connection=connection,
                 )
-
-                current_level = await self.admin_levels_repo.get_level(chat_id, user_id, connection=connection)
-                desired_level = current_level
-                if self.system_owner_user_id == user_id:
-                    desired_level = max(current_level, 5)
-                elif status == ChatMemberStatus.CREATOR:
-                    desired_level = max(current_level, 4)
-                elif current_level < 1:
-                    desired_level = 1
-
-                if desired_level > current_level:
-                    await self.admin_levels_repo.set_level(
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        admin_level=desired_level,
-                        granted_by_user_id=None,
-                        connection=connection,
-                    )
 
             if owner_user_id is not None:
                 await self.chats_repo.update_owner(chat_id, owner_user_id, connection=connection)
         return owner_user_id
+
+    async def sync_member_role(
+        self,
+        *,
+        chat_id: int,
+        chat_type: str,
+        title: str | None,
+        user_id: int,
+        username: str | None,
+        display_name: str,
+        first_name: str | None,
+        last_name: str | None,
+        status: str,
+    ) -> None:
+        if chat_type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            await self.chats_repo.upsert_chat(
+                chat_id=chat_id,
+                chat_type=chat_type,
+                title=title,
+                owner_user_id=None,
+                settings={},
+            )
+            return
+
+        async with self.database.transaction() as connection:
+            await self.chats_repo.upsert_chat(
+                chat_id=chat_id,
+                chat_type=chat_type,
+                title=title,
+                owner_user_id=user_id if status == ChatMemberStatus.CREATOR else None,
+                settings={},
+                connection=connection,
+            )
+            await self._apply_member_role(
+                chat_id=chat_id,
+                user_id=user_id,
+                username=username,
+                display_name=display_name,
+                first_name=first_name,
+                last_name=last_name,
+                status=status,
+                connection=connection,
+            )
+            if status == ChatMemberStatus.CREATOR:
+                await self.chats_repo.update_owner(chat_id, user_id, connection=connection)
+
+    async def _apply_member_role(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        username: str | None,
+        display_name: str,
+        first_name: str | None,
+        last_name: str | None,
+        status: str,
+        connection,
+    ) -> None:
+        await self.users_repo.upsert_user(
+            user_id=user_id,
+            username=username,
+            display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
+            last_seen_chat_id=chat_id,
+            connection=connection,
+        )
+
+        current_level = await self.admin_levels_repo.get_level(chat_id, user_id, connection=connection)
+        desired_level = current_level
+        if self.system_owner_user_id == user_id:
+            desired_level = max(desired_level, 5)
+        elif status == ChatMemberStatus.CREATOR:
+            desired_level = max(desired_level, 5)
+        elif current_level < 1 and status == ChatMemberStatus.ADMINISTRATOR:
+            desired_level = 1
+
+        if desired_level > current_level:
+            await self.admin_levels_repo.set_level(
+                chat_id=chat_id,
+                user_id=user_id,
+                admin_level=desired_level,
+                granted_by_user_id=None,
+                connection=connection,
+            )

@@ -19,7 +19,7 @@ class MutesRepository:
         chat_id: int,
         user_id: int,
         started_at: datetime,
-        ends_at: datetime,
+        ends_at: datetime | None,
         reason: str | None,
         moderator_user_id: int | None,
         connection: aiosqlite.Connection | None = None,
@@ -44,7 +44,7 @@ class MutesRepository:
             """
             SELECT * FROM active_mutes
             WHERE chat_id = ? AND user_id = ? AND is_active = 1
-            ORDER BY ends_at DESC
+            ORDER BY started_at DESC
             LIMIT 1;
             """,
             (chat_id, user_id),
@@ -61,7 +61,7 @@ class MutesRepository:
         rows = await self.database.fetchall(
             """
             SELECT * FROM active_mutes
-            WHERE is_active = 1 AND ends_at <= ?
+            WHERE is_active = 1 AND ends_at IS NOT NULL AND ends_at <= ?
             ORDER BY ends_at ASC;
             """,
             (reference_iso,),
@@ -81,7 +81,7 @@ class MutesRepository:
         if chat_id is not None:
             query += " AND chat_id = ?"
             params.append(chat_id)
-        query += " ORDER BY ends_at ASC"
+        query += " ORDER BY CASE WHEN ends_at IS NULL THEN 1 ELSE 0 END, ends_at ASC, started_at ASC"
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
@@ -103,7 +103,7 @@ class MutesRepository:
 
     async def cleanup_old_records(self, cutoff_iso: str, *, connection: aiosqlite.Connection | None = None) -> None:
         await self.database.execute(
-            "DELETE FROM active_mutes WHERE is_active = 0 AND ends_at < ?;",
+            "DELETE FROM active_mutes WHERE is_active = 0 AND COALESCE(ends_at, started_at) < ?;",
             (cutoff_iso,),
             connection=connection,
         )

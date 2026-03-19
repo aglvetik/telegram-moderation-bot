@@ -131,15 +131,23 @@ class TimeParserTests(unittest.TestCase):
         self.assertEqual(duration, timedelta(hours=1, minutes=30))
         self.assertEqual(consumed, 2)
 
+    def test_parse_long_duration_above_old_cap(self) -> None:
+        duration, consumed = match_duration_tokens(["90", "дней"], 0)
+        self.assertEqual(duration, timedelta(days=90))
+        self.assertEqual(consumed, 2)
+
     def test_humanize_hour(self) -> None:
         self.assertEqual(humanize_duration(3600), "1 час")
 
     def test_humanize_days(self) -> None:
         self.assertEqual(humanize_duration(3 * 86400), "3 дня")
 
+    def test_humanize_long_days(self) -> None:
+        self.assertEqual(humanize_duration(90 * 86400), "90 дней")
+
     def test_invalid_duration(self) -> None:
         with self.assertRaises(Exception):
-            parse_duration_token("31д")
+            parse_duration_token("0д")
 
 
 if __name__ == "__main__":

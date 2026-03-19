@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Sequence
 
-from utils.constants import MAX_MUTE_DAYS
 from utils.exceptions import ValidationError
 
-_COMPACT_SINGLE_CHAR_PATTERN = re.compile(r"^(?P<value>\d+)(?P<unit>[мчдн])$")
+_COMPACT_SINGLE_CHAR_PATTERN = re.compile(r"^(?P<value>\d+)(?P<unit>[мчдн])$", re.IGNORECASE)
 _MERGED_DURATION_PATTERN = re.compile(r"^(?P<value>\d+)(?P<unit>[a-zа-яё]+)$", re.IGNORECASE)
 
 _UNIT_ALIASES = {
@@ -63,16 +62,16 @@ def match_duration_tokens(tokens: Sequence[str], start_index: int) -> tuple[time
     consumed = first.consumed
 
     if not first.explicit_number:
-        return _validate_total_duration(total), consumed
+        return total, consumed
 
     while True:
         next_component = _match_duration_component(tokens, start_index + consumed)
         if next_component is None or not next_component.explicit_number:
             break
-        total += next_component.duration
+        total = _combine_durations(total, next_component.duration)
         consumed += next_component.consumed
 
-    return _validate_total_duration(total), consumed
+    return total, consumed
 
 
 def timedelta_to_seconds(duration: timedelta) -> int:
@@ -141,19 +140,20 @@ def _build_duration(value: int, unit: str) -> timedelta:
     if value <= 0:
         raise ValidationError("❌ Длительность должна быть больше нуля.")
 
-    if unit == "м":
-        duration = timedelta(minutes=value)
-    elif unit == "ч":
-        duration = timedelta(hours=value)
-    elif unit == "д":
-        duration = timedelta(days=value)
-    else:
-        duration = timedelta(weeks=value)
+    try:
+        if unit == "м":
+            return timedelta(minutes=value)
+        if unit == "ч":
+            return timedelta(hours=value)
+        if unit == "д":
+            return timedelta(days=value)
+        return timedelta(weeks=value)
+    except OverflowError as exc:
+        raise ValidationError("❌ Указана слишком большая длительность ограничения.") from exc
 
-    return _validate_total_duration(duration)
 
-
-def _validate_total_duration(duration: timedelta) -> timedelta:
-    if duration > timedelta(days=MAX_MUTE_DAYS):
-        raise ValidationError("❌ Максимальная длительность ограничения — 30 дней.")
-    return duration
+def _combine_durations(left: timedelta, right: timedelta) -> timedelta:
+    try:
+        return left + right
+    except OverflowError as exc:
+        raise ValidationError("❌ Указана слишком большая длительность ограничения.") from exc

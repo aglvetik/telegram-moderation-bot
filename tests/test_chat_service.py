@@ -59,7 +59,7 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
             system_owner_user_id=system_owner_user_id,
         )
 
-    async def test_register_chat_assigns_owner_level_four_and_admin_level_one(self) -> None:
+    async def test_register_chat_assigns_owner_level_five_and_admin_level_one(self) -> None:
         chat_service = self._build_service(system_owner_user_id=None)
 
         owner_user_id = await chat_service.register_chat(
@@ -75,7 +75,7 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.owner_user_id, 111)
         owner_level = await self.admin_levels_repo.get_level(-1001234567890, 111)
         admin_level = await self.admin_levels_repo.get_level(-1001234567890, 222)
-        self.assertEqual(owner_level, 4)
+        self.assertEqual(owner_level, 5)
         self.assertEqual(admin_level, 1)
 
     async def test_register_chat_preserves_level_five_for_system_owner(self) -> None:
@@ -90,6 +90,26 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
 
         owner_level = await self.admin_levels_repo.get_level(-1001234567890, 111)
         self.assertEqual(owner_level, 5)
+
+    async def test_sync_member_role_persists_chat_owner_level_five(self) -> None:
+        chat_service = self._build_service(system_owner_user_id=None)
+
+        await chat_service.sync_member_role(
+            chat_id=-1001234567890,
+            chat_type=ChatType.SUPERGROUP,
+            title="Verification chat",
+            user_id=333,
+            username="creator_user",
+            display_name="Chat Creator",
+            first_name="Chat",
+            last_name="Creator",
+            status=ChatMemberStatus.CREATOR,
+        )
+
+        chat = await self.chats_repo.get_chat(-1001234567890)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 333)
+        self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 333), 5)
 
 
 if __name__ == "__main__":

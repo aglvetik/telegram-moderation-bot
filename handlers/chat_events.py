@@ -6,6 +6,7 @@ from aiogram.types import ChatMemberUpdated, Message
 
 from services import ServiceContainer
 from utils.constants import MessageCategory
+from utils.telegram_helpers import build_user_display_name
 
 router = Router(name="chat_events")
 
@@ -46,8 +47,25 @@ async def handle_bot_membership_update(event: ChatMemberUpdated, bot: Bot, servi
 
 
 @router.chat_member()
-async def handle_chat_member_update(_: ChatMemberUpdated) -> None:
-    return
+async def handle_chat_member_update(event: ChatMemberUpdated, services: ServiceContainer) -> None:
+    if event.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        return
+
+    user = getattr(event.new_chat_member, "user", None)
+    if user is None:
+        return
+
+    await services.chats.sync_member_role(
+        chat_id=event.chat.id,
+        chat_type=event.chat.type,
+        title=event.chat.title,
+        user_id=user.id,
+        username=user.username,
+        display_name=build_user_display_name(user),
+        first_name=user.first_name,
+        last_name=user.last_name,
+        status=event.new_chat_member.status,
+    )
 
 
 @router.message(F.migrate_to_chat_id)

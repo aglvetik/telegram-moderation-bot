@@ -200,12 +200,14 @@ class MessageService:
 
     def target_higher_level(self) -> str:
         return (
-            "❌ <b>Нельзя применить действие.</b>\n"
-            "У пользователя более высокий уровень модерации."
+            self.target_same_or_higher_level()
         )
 
     def target_equal_level(self) -> str:
-        return "❌ Нельзя применять действие к пользователю с таким же уровнем модерации."
+        return self.target_same_or_higher_level()
+
+    def target_same_or_higher_level(self) -> str:
+        return "❌ Нельзя применить действие к пользователю с таким же или более высоким уровнем."
 
     def target_admin_protected(self) -> str:
         return (
@@ -264,17 +266,27 @@ class MessageService:
     def user_link(self, user: ResolvedUser) -> str:
         return mention_html(user.user_id, user.display_name)
 
-    def mute_success(self, target: ResolvedUser, moderator: ResolvedUser, duration_seconds: int, reason: str) -> str:
+    def moderation_duration(self, duration_seconds: int | None) -> str:
+        if duration_seconds is None:
+            return "бессрочно"
+        return humanize_duration(duration_seconds)
+
+    def mute_success(self, target: ResolvedUser, moderator: ResolvedUser, duration_seconds: int | None, reason: str) -> str:
+        duration_text = (
+            "бессрочно"
+            if duration_seconds is None
+            else f"на {self.moderation_duration(duration_seconds)}"
+        )
         return (
-            f"🔇 Пользователь {self.user_link(target)} лишается права слова на {humanize_duration(duration_seconds)}.\n"
+            f"🔇 Пользователь {self.user_link(target)} лишается права слова {duration_text}.\n"
             f"💬 Причина: {reason}\n"
             f"👺 Модератор: {self.user_link(moderator)}"
         )
 
-    def mute_already_active(self, target: ResolvedUser, remaining_seconds: int) -> str:
+    def mute_already_active(self, target: ResolvedUser, remaining_seconds: int | None) -> str:
         return (
             f"⚠️ Пользователь {self.user_link(target)} уже находится в муте.\n"
-            f"Ограничение действует ещё {humanize_duration(max(remaining_seconds, 60))}."
+            f"Ограничение действует {'бессрочно' if remaining_seconds is None else f'ещё {humanize_duration(max(remaining_seconds, 60))}'}."
         )
 
     def unmute_success(self, target: ResolvedUser) -> str:
@@ -413,11 +425,14 @@ class MessageService:
             f"⛔ Активный бан: {'да' if active_ban else 'нет'}",
         ]
         if active_mute:
-            remaining = max(int((active_mute.ends_at - datetime.now(active_mute.ends_at.tzinfo)).total_seconds()), 0)
+            remaining_text = "бессрочно"
+            if active_mute.ends_at is not None:
+                remaining = max(int((active_mute.ends_at - datetime.now(active_mute.ends_at.tzinfo)).total_seconds()), 0)
+                remaining_text = humanize_duration(max(remaining, 60))
             lines.extend(
                 [
                     "",
-                    f"🔇 Мут действует ещё: {humanize_duration(max(remaining, 60))}",
+                    f"🔇 Мут действует ещё: {remaining_text}",
                 ]
             )
         return "\n".join(lines)
@@ -445,6 +460,8 @@ class MessageService:
             suffix = ""
             if record.duration_seconds:
                 suffix = f" • срок: {humanize_duration(record.duration_seconds)}"
+            elif record.action_type in {"mute", "ban"} and record.is_active and record.mute_until is None:
+                suffix = " • срок: бессрочно"
             lines.append(f"• {label} — {reason}{suffix} • {format_datetime_ru(record.created_at)}")
         return "\n".join(lines)
 
@@ -458,6 +475,11 @@ class MessageService:
             "Далее список пользователей с оставшимся временем мута.",
         ]
         for user, mute in items:
-            remaining = max(int((mute.ends_at - datetime.now(mute.ends_at.tzinfo)).total_seconds()), 0)
-            lines.append(f"• {self.user_link(user)} — ещё {humanize_duration(max(remaining, 60))}")
+            if mute.ends_at is None:
+                lines.append(f"• {self.user_link(user)} — бессрочно")
+                continue
+            else:
+                remaining = max(int((mute.ends_at - datetime.now(mute.ends_at.tzinfo)).total_seconds()), 0)
+                remaining_text = humanize_duration(max(remaining, 60))
+            lines.append(f"• {self.user_link(user)} — ещё {remaining_text}")
         return "\n".join(lines)

@@ -40,7 +40,7 @@ class HelpCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
                 reply=reply_mock,
             ),
             permissions=SimpleNamespace(
-                get_my_level=AsyncMock(return_value=0),
+                get_my_effective_level=AsyncMock(return_value=0),
             ),
         )
         message = SimpleNamespace(
@@ -62,7 +62,7 @@ class HelpCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
                 reply=reply_mock,
             ),
             permissions=SimpleNamespace(
-                get_my_level=AsyncMock(return_value=1),
+                get_my_effective_level=AsyncMock(return_value=1),
             ),
         )
         message = SimpleNamespace(
