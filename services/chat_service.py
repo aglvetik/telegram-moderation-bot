@@ -57,6 +57,35 @@ class ChatService:
             owner_user_id = await self._refresh_owner_and_admins(bot, chat_id)
         return owner_user_id
 
+    async def ensure_owner_snapshot(self, bot: Bot, *, chat_id: int) -> int | None:
+        chat_record = await self.chats_repo.get_chat(chat_id)
+        if chat_record is None:
+            try:
+                chat = await call_with_retry(
+                    lambda: bot.get_chat(chat_id),
+                    logger=self.logger,
+                    retry=self.retry_config,
+                    context=f"get_chat:{chat_id}",
+                )
+            except Exception:
+                self.logger.warning("Could not load chat metadata for owner refresh in chat %s", chat_id)
+                return None
+
+            await self.chats_repo.upsert_chat(
+                chat_id=chat_id,
+                chat_type=chat.type,
+                title=getattr(chat, "title", None),
+                owner_user_id=None,
+                settings={},
+            )
+            chat_record = await self.chats_repo.get_chat(chat_id)
+
+        if chat_record is None or chat_record.chat_type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            return chat_record.owner_user_id if chat_record else None
+        if chat_record.owner_user_id is not None:
+            return chat_record.owner_user_id
+        return await self._refresh_owner_and_admins(bot, chat_id)
+
     async def deactivate_chat(self, chat_id: int) -> None:
         await self.chats_repo.set_chat_active(chat_id, False)
 
@@ -163,6 +192,40 @@ class ChatService:
             )
             if status == ChatMemberStatus.CREATOR:
                 await self.chats_repo.update_owner(chat_id, user_id, connection=connection)
+
+    async def promote_chat_owner(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        username: str | None,
+        display_name: str,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> None:
+        chat_record = await self.chats_repo.get_chat(chat_id)
+        if chat_record is None:
+            self.logger.debug("Skipping chat owner promotion for unknown chat %s", chat_id)
+            return
+
+        async with self.database.transaction() as connection:
+            await self.users_repo.upsert_user(
+                user_id=user_id,
+                username=username,
+                display_name=display_name,
+                first_name=first_name,
+                last_name=last_name,
+                last_seen_chat_id=chat_id,
+                connection=connection,
+            )
+            await self.chats_repo.update_owner(chat_id, user_id, connection=connection)
+            await self.admin_levels_repo.set_level(
+                chat_id=chat_id,
+                user_id=user_id,
+                admin_level=5,
+                granted_by_user_id=None,
+                connection=connection,
+            )
 
     async def _apply_member_role(
         self,

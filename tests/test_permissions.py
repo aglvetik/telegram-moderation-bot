@@ -11,9 +11,13 @@ from config import AppConfig, BackupConfig, DatabaseConfig, MessagePolicyConfig,
 from database.db import Database
 from database.migrations import run_migrations
 from database.repositories.admin_levels_repo import AdminLevelsRepository
+from database.repositories.bans_repo import BansRepository
 from database.repositories.chats_repo import ChatsRepository
+from database.repositories.message_refs_repo import MessageRefsRepository
+from database.repositories.mutes_repo import MutesRepository
 from database.repositories.punishments_repo import PunishmentsRepository
 from database.repositories.users_repo import UsersRepository
+from services.chat_service import ChatService
 from services.message_service import MessageService
 from services.permission_service import PermissionService
 from services.user_resolution_service import ResolvedUser
@@ -62,6 +66,12 @@ class FakeBot:
 
     async def get_chat_member(self, chat_id: int, user_id: int):
         return self.member_map.get(user_id)
+
+    async def get_chat_administrators(self, chat_id: int):
+        return []
+
+    async def get_chat(self, chat_id: int):
+        return SimpleNamespace(id=chat_id, type=ChatType.SUPERGROUP, title="Permissions chat")
 
 
 class PermissionModelTests(unittest.TestCase):
@@ -128,9 +138,24 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.chats_repo = ChatsRepository(self.database)
         self.admin_levels_repo = AdminLevelsRepository(self.database)
+        self.message_refs_repo = MessageRefsRepository(self.database)
+        self.mutes_repo = MutesRepository(self.database)
+        self.bans_repo = BansRepository(self.database)
         self.punishments_repo = PunishmentsRepository(self.database)
         self.users_repo = UsersRepository(self.database)
         self.message_service = MessageService(build_test_config())
+        self.chat_service = ChatService(
+            database=self.database,
+            chats_repo=self.chats_repo,
+            admin_levels_repo=self.admin_levels_repo,
+            punishments_repo=self.punishments_repo,
+            mutes_repo=self.mutes_repo,
+            bans_repo=self.bans_repo,
+            users_repo=self.users_repo,
+            message_refs_repo=self.message_refs_repo,
+            retry_config=RetryConfig(retries=0, base_delay_seconds=0.1),
+            system_owner_user_id=None,
+        )
         self.permission_service = PermissionService(
             database=self.database,
             admin_levels_repo=self.admin_levels_repo,
@@ -139,6 +164,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=self.message_service,
             system_owner_user_id=None,
+            chat_service=self.chat_service,
         )
         self.chat_id = -100500
         await self.chats_repo.upsert_chat(
@@ -291,6 +317,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         bot = FakeBot(
             {
@@ -372,6 +399,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         other_chat_id = -100501
         await self.chats_repo.upsert_chat(
@@ -392,6 +420,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         self.assertEqual(await owner_service.get_my_level(self.chat_id, SimpleNamespace(id=5300889569)), 0)
         self.assertEqual(await owner_service.get_effective_level(self.chat_id, 5300889569), 5)
@@ -402,6 +431,84 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.permission_service.get_my_level(self.chat_id, SimpleNamespace(id=77)), 5)
         self.assertEqual(await self.permission_service.get_effective_level(self.chat_id, 77), 5)
 
+    async def test_chat_owner_fallback_works_without_admin_levels_row(self) -> None:
+        await self.chats_repo.update_owner(self.chat_id, 78)
+        self.assertEqual(await self.admin_levels_repo.get_level(self.chat_id, 78), 0)
+        self.assertEqual(await self.permission_service.get_level(self.chat_id, 78), 5)
+        self.assertEqual(await self.permission_service.get_my_level(self.chat_id, SimpleNamespace(id=78)), 5)
+        self.assertEqual(await self.permission_service.get_effective_level(self.chat_id, 78), 5)
+
+    async def test_lazy_owner_refresh_repairs_missing_owner_for_my_level(self) -> None:
+        bot = FakeBot(
+            {
+                79: make_member(79, status=ChatMemberStatus.CREATOR),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+
+        level = await self.permission_service.get_my_level(self.chat_id, SimpleNamespace(id=79), bot=bot)
+        self.assertEqual(level, 5)
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 79)
+        self.assertEqual(await self.admin_levels_repo.get_level(self.chat_id, 79), 5)
+
+    async def test_lazy_owner_refresh_repairs_missing_owner_for_level_info(self) -> None:
+        owner_member = make_member(80, status=ChatMemberStatus.CREATOR)
+        bot = FakeBot(
+            {
+                80: owner_member,
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+
+        level = await self.permission_service.get_level(self.chat_id, 80, bot=bot, member=owner_member)
+        self.assertEqual(level, 5)
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 80)
+
+    async def test_real_chat_owner_can_pass_moderation_permission_checks(self) -> None:
+        bot = FakeBot(
+            {
+                81: make_member(81, status=ChatMemberStatus.CREATOR),
+                82: make_member(82, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+
+        result = await self.permission_service.ensure_moderation_allowed(
+            bot=bot,
+            chat_id=self.chat_id,
+            actor=SimpleNamespace(id=81, username="owner81", first_name="Owner", last_name=None),
+            target=ResolvedUser(user_id=82, username="target82", display_name="Target 82", member=make_member(82, status=ChatMemberStatus.MEMBER)),
+            action="mute",
+        )
+        self.assertEqual(result[0], 5)
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 81)
+
+    async def test_real_chat_owner_can_pass_level_management_checks(self) -> None:
+        bot = FakeBot(
+            {
+                83: make_member(83, status=ChatMemberStatus.CREATOR),
+                84: make_member(84, status=ChatMemberStatus.MEMBER),
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+
+        result = await self.permission_service.ensure_manage_levels_allowed(
+            bot=bot,
+            chat_id=self.chat_id,
+            actor=SimpleNamespace(id=83, username="owner83", first_name="Owner", last_name=None),
+            target=ResolvedUser(user_id=84, username="target84", display_name="Target 84"),
+        )
+        self.assertEqual(result[0], 5)
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 83)
+
     async def test_system_owner_permission_override_works_without_db_assignment(self) -> None:
         owner_service = PermissionService(
             database=self.database,
@@ -411,6 +518,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         bot = FakeBot(
             {
@@ -437,6 +545,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         bot = FakeBot(
             {
@@ -464,6 +573,7 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
             system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
         )
         bot = FakeBot(
             {

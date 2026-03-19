@@ -92,15 +92,6 @@ async def build_services(config: AppConfig) -> tuple[Database, ServiceContainer]
         punishments_repo=punishments_repo,
         message_refs_repo=message_refs_repo,
     )
-    permission_service = PermissionService(
-        database=database,
-        admin_levels_repo=admin_levels_repo,
-        chats_repo=chats_repo,
-        punishments_repo=punishments_repo,
-        users_repo=users_repo,
-        message_service=message_service,
-        system_owner_user_id=config.system_owner_user_id,
-    )
     chat_service = ChatService(
         database=database,
         chats_repo=chats_repo,
@@ -112,6 +103,16 @@ async def build_services(config: AppConfig) -> tuple[Database, ServiceContainer]
         message_refs_repo=message_refs_repo,
         retry_config=config.retry,
         system_owner_user_id=config.system_owner_user_id,
+    )
+    permission_service = PermissionService(
+        database=database,
+        admin_levels_repo=admin_levels_repo,
+        chats_repo=chats_repo,
+        punishments_repo=punishments_repo,
+        users_repo=users_repo,
+        message_service=message_service,
+        system_owner_user_id=config.system_owner_user_id,
+        chat_service=chat_service,
     )
 
     services = ServiceContainer(

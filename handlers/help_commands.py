@@ -36,7 +36,7 @@ async def handle_help(message: Message, bot: Bot, services: ServiceContainer) ->
         )
         return
 
-    level = await services.permissions.get_my_effective_level(message.chat.id, message.from_user)
+    level = await services.permissions.get_my_effective_level(message.chat.id, message.from_user, bot=bot)
     if level < 1:
         await services.messages.reply(
             bot=bot,

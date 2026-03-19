@@ -37,7 +37,7 @@ async def handle_admin_levels(message: Message, bot: Bot, services: ServiceConta
     parsed = services.parser.parse(message.text, has_reply=message.reply_to_message is not None)
 
     if parsed.kind == CommandKind.MY_LEVEL:
-        level = await services.permissions.get_my_level(message.chat.id, message.from_user)
+        level = await services.permissions.get_my_level(message.chat.id, message.from_user, bot=bot)
         await services.messages.reply(
             bot=bot,
             message=message,
@@ -65,7 +65,7 @@ async def handle_admin_levels(message: Message, bot: Bot, services: ServiceConta
             actor=message.from_user,
             required_level=MODERATION_REQUIRED_LEVELS["view_level"],
         )
-        level = await services.permissions.get_level(message.chat.id, target.user_id)
+        level = await services.permissions.get_level(message.chat.id, target.user_id, bot=bot, member=target.member)
         await services.messages.reply(
             bot=bot,
             message=message,

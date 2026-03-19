@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from aiogram import Bot
+from aiogram.enums import ChatMemberStatus
 from aiogram.types import User
 
 from database.db import Database
@@ -13,6 +16,9 @@ from services.user_resolution_service import ResolvedUser
 from utils.constants import LEVEL_FOUR_ASSIGNMENT_CAP, MAX_ASSIGNABLE_ADMIN_LEVEL, MODERATION_REQUIRED_LEVELS
 from utils.exceptions import PermissionDeniedError, TargetResolutionError, ValidationError
 from utils.telegram_helpers import is_active_chat_member, is_admin_member, member_has_restrict_rights, safe_get_chat_member
+
+if TYPE_CHECKING:
+    from services.chat_service import ChatService
 
 
 class PermissionService:
@@ -28,6 +34,7 @@ class PermissionService:
         users_repo: UsersRepository,
         message_service: MessageService,
         system_owner_user_id: int | None,
+        chat_service: ChatService | None = None,
     ) -> None:
         self.database = database
         self.admin_levels_repo = admin_levels_repo
@@ -36,17 +43,22 @@ class PermissionService:
         self.users_repo = users_repo
         self.message_service = message_service
         self.system_owner_user_id = system_owner_user_id
+        self.chat_service = chat_service
 
-    async def get_level(self, chat_id: int, user_id: int) -> int:
+    async def get_level(self, chat_id: int, user_id: int, *, bot: Bot | None = None, member=None) -> int:
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=user_id, member=member)
         return await self._get_public_level(chat_id, user_id)
 
-    async def get_my_level(self, chat_id: int, user: User) -> int:
+    async def get_my_level(self, chat_id: int, user: User, *, bot: Bot | None = None) -> int:
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=user.id)
         return await self._get_public_level(chat_id, user.id)
 
-    async def get_effective_level(self, chat_id: int, user_id: int) -> int:
+    async def get_effective_level(self, chat_id: int, user_id: int, *, bot: Bot | None = None, member=None) -> int:
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=user_id, member=member)
         return await self._get_effective_level(chat_id, user_id)
 
-    async def get_my_effective_level(self, chat_id: int, user: User) -> int:
+    async def get_my_effective_level(self, chat_id: int, user: User, *, bot: Bot | None = None) -> int:
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=user.id)
         return await self._get_effective_level(chat_id, user.id)
 
     async def ensure_moderation_allowed(
@@ -61,6 +73,7 @@ class PermissionService:
         required_level = MODERATION_REQUIRED_LEVELS[action]
         caller_level, _ = await self._ensure_actor_ready(bot, chat_id, actor, required_level=required_level)
         await self._ensure_bot_can_do_action(bot, chat_id, action)
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=target.user_id, member=target.member)
         # System-owner level 5 is an authorization override for the caller only.
         # It must not create moderation immunity when that user is the target.
         target_level = await self._get_public_level(chat_id, target.user_id)
@@ -100,6 +113,7 @@ class PermissionService:
         )
         target_level: int | None = None
         if target is not None:
+            await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=target.user_id, member=target.member)
             if target.user_id == actor.id:
                 raise PermissionDeniedError(self.message_service.target_is_self())
             if target.user_id == bot.id:
@@ -249,6 +263,7 @@ class PermissionService:
         actor_member = await safe_get_chat_member(bot, chat_id, actor.id)
         if actor_member is None or not is_active_chat_member(actor_member):
             raise PermissionDeniedError(self.message_service.caller_not_member())
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=actor.id, member=actor_member)
         caller_level = await self._get_effective_level(chat_id, actor.id)
         if caller_level < required_level:
             raise PermissionDeniedError(self.message_service.insufficient_level(required_level))
@@ -278,3 +293,38 @@ class PermissionService:
 
     def is_system_owner(self, user_id: int) -> bool:
         return self.system_owner_user_id is not None and user_id == self.system_owner_user_id
+
+    async def _maybe_refresh_owner_state(
+        self,
+        *,
+        bot: Bot | None,
+        chat_id: int,
+        user_id: int,
+        member=None,
+    ) -> None:
+        if self.is_system_owner(user_id):
+            return
+
+        chat_record = await self.chats_repo.get_chat(chat_id)
+        if chat_record and chat_record.owner_user_id == user_id:
+            return
+
+        resolved_member = member
+        if resolved_member is None and bot is not None:
+            resolved_member = await safe_get_chat_member(bot, chat_id, user_id)
+
+        if resolved_member is not None and getattr(resolved_member, "status", None) == ChatMemberStatus.CREATOR:
+            if self.chat_service is not None and getattr(resolved_member, "user", None) is not None:
+                owner_user = resolved_member.user
+                await self.chat_service.promote_chat_owner(
+                    chat_id=chat_id,
+                    user_id=owner_user.id,
+                    username=owner_user.username,
+                    display_name=f"{owner_user.first_name} {owner_user.last_name or ''}".strip(),
+                    first_name=owner_user.first_name,
+                    last_name=owner_user.last_name,
+                )
+            return
+
+        if (chat_record is None or chat_record.owner_user_id is None) and bot is not None and self.chat_service is not None:
+            await self.chat_service.ensure_owner_snapshot(bot, chat_id=chat_id)

@@ -111,6 +111,24 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.owner_user_id, 333)
         self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 333), 5)
 
+    async def test_ensure_owner_snapshot_repairs_existing_chat_without_owner(self) -> None:
+        chat_service = self._build_service(system_owner_user_id=None)
+        await self.chats_repo.upsert_chat(
+            chat_id=-1001234567890,
+            chat_type=ChatType.SUPERGROUP,
+            title="Existing chat",
+            owner_user_id=None,
+            settings={},
+        )
+
+        owner_user_id = await chat_service.ensure_owner_snapshot(FakeBot(), chat_id=-1001234567890)
+
+        self.assertEqual(owner_user_id, 111)
+        chat = await self.chats_repo.get_chat(-1001234567890)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 111)
+        self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 111), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

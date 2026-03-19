@@ -47,6 +47,7 @@ async def handle_info_commands(message: Message, bot: Bot, services: ServiceCont
 
     target = await services.users.resolve_target(bot, message, parsed)
     if parsed.kind == CommandKind.INFO:
+        await services.permissions.get_level(message.chat.id, target.user_id, bot=bot, member=target.member)
         await services.messages.reply(
             bot=bot,
             message=message,
