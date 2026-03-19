@@ -73,6 +73,7 @@ async def handle_moderation_command(message: Message, bot: Bot, services: Servic
             chat_id=message.chat.id,
             moderator=moderator,
             target=target,
+            duration_seconds=parsed.duration_seconds,
             reason=parsed.reason,
         )
     else:

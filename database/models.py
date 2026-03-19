@@ -185,6 +185,7 @@ class BanRecord:
     chat_id: int
     user_id: int
     banned_at: datetime
+    ends_at: datetime | None
     reason: str | None
     moderator_user_id: int | None
     is_active: bool
@@ -196,6 +197,7 @@ class BanRecord:
             chat_id=row["chat_id"],
             user_id=row["user_id"],
             banned_at=from_iso(row["banned_at"]) or datetime.utcnow(),
+            ends_at=from_iso(row.get("ends_at")),
             reason=row["reason"],
             moderator_user_id=row["moderator_user_id"],
             is_active=bool(row["is_active"]),

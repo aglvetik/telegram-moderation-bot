@@ -19,16 +19,17 @@ class BansRepository:
         chat_id: int,
         user_id: int,
         banned_at: datetime,
+        ends_at: datetime | None,
         reason: str | None,
         moderator_user_id: int | None,
         connection: aiosqlite.Connection | None = None,
     ) -> None:
         await self.database.execute(
             """
-            INSERT INTO bans(chat_id, user_id, banned_at, reason, moderator_user_id, is_active)
-            VALUES(?, ?, ?, ?, ?, 1);
+            INSERT INTO bans(chat_id, user_id, banned_at, ends_at, reason, moderator_user_id, is_active)
+            VALUES(?, ?, ?, ?, ?, ?, 1);
             """,
-            (chat_id, user_id, to_iso(banned_at), reason, moderator_user_id),
+            (chat_id, user_id, to_iso(banned_at), to_iso(ends_at), reason, moderator_user_id),
             connection=connection,
         )
 
@@ -51,6 +52,23 @@ class BansRepository:
         )
         return BanRecord.from_row(row) if row else None
 
+    async def list_expired_bans(
+        self,
+        reference_iso: str,
+        *,
+        connection: aiosqlite.Connection | None = None,
+    ) -> list[BanRecord]:
+        rows = await self.database.fetchall(
+            """
+            SELECT * FROM bans
+            WHERE is_active = 1 AND ends_at IS NOT NULL AND ends_at <= ?
+            ORDER BY ends_at ASC;
+            """,
+            (reference_iso,),
+            connection=connection,
+        )
+        return [BanRecord.from_row(row) for row in rows]
+
     async def deactivate_ban(
         self,
         *,
@@ -66,7 +84,7 @@ class BansRepository:
 
     async def cleanup_old_records(self, cutoff_iso: str, *, connection: aiosqlite.Connection | None = None) -> None:
         await self.database.execute(
-            "DELETE FROM bans WHERE is_active = 0 AND banned_at < ?;",
+            "DELETE FROM bans WHERE is_active = 0 AND COALESCE(ends_at, banned_at) < ?;",
             (cutoff_iso,),
             connection=connection,
         )

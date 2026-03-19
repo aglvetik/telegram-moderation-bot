@@ -10,7 +10,7 @@ from aiogram.enums import ChatMemberStatus
 
 from config import AppConfig
 from database.db import Database
-from database.models import ActionType, ActiveMuteRecord
+from database.models import ActionType, ActiveMuteRecord, BanRecord
 from database.repositories.bans_repo import BansRepository
 from database.repositories.mutes_repo import MutesRepository
 from database.repositories.punishments_repo import PunishmentsRepository
@@ -267,10 +267,15 @@ class ModerationService:
         chat_id: int,
         moderator: ResolvedUser,
         target: ResolvedUser,
+        duration_seconds: int | None,
         reason: str | None,
     ) -> ActionResult:
         reason = ensure_reason_length(reason)
+        now = utc_now()
         existing = await self.bans_repo.get_active_ban(chat_id, target.user_id)
+        if existing and existing.ends_at and existing.ends_at <= now:
+            await self.expire_ban(bot=bot, ban=existing)
+            existing = None
         if existing:
             return ActionResult(
                 message=self.message_service.already_banned(),
@@ -278,8 +283,13 @@ class ModerationService:
                 delete_command=False,
             )
 
+        ends_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
+        if ends_at is None:
+            ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id)
+        else:
+            ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id, until_date=ends_at)
         await call_with_retry(
-            lambda: bot.ban_chat_member(chat_id=chat_id, user_id=target.user_id),
+            ban_operation,
             logger=self.logger,
             retry=self.config.retry,
             context=f"ban:{chat_id}:{target.user_id}",
@@ -298,7 +308,8 @@ class ModerationService:
                 await self.bans_repo.create_active_ban(
                     chat_id=chat_id,
                     user_id=target.user_id,
-                    banned_at=utc_now(),
+                    banned_at=now,
+                    ends_at=ends_at,
                     reason=reason,
                     moderator_user_id=moderator.user_id,
                     connection=connection,
@@ -319,8 +330,8 @@ class ModerationService:
                     moderator_display_name=moderator.display_name,
                     action_type=ActionType.BAN.value,
                     reason=reason,
-                    duration_seconds=None,
-                    mute_until=None,
+                    duration_seconds=duration_seconds,
+                    mute_until=to_iso(ends_at),
                     is_active=True,
                     extra_data_json=None,
                     connection=connection,
@@ -381,7 +392,7 @@ class ModerationService:
                 )
         except Exception as exc:
             if existing:
-                await self._compensate_reban(bot=bot, chat_id=chat_id, user_id=target.user_id)
+                await self._compensate_reban(bot=bot, chat_id=chat_id, user_id=target.user_id, ends_at=existing.ends_at)
             raise DatabaseOperationError("❌ Не удалось обновить базу данных после разбана.") from exc
         return ActionResult(message=self.message_service.unban_success(target))
 
@@ -432,6 +443,22 @@ class ModerationService:
                 chat_id=mute.chat_id,
                 target_user_id=mute.user_id,
                 action_types=(ActionType.MUTE.value,),
+                connection=connection,
+            )
+
+    async def expire_ban(self, *, bot: Bot, ban: BanRecord) -> None:
+        await call_with_retry(
+            lambda: bot.unban_chat_member(chat_id=ban.chat_id, user_id=ban.user_id, only_if_banned=True),
+            logger=self.logger,
+            retry=self.config.retry,
+            context=f"expire-ban:{ban.chat_id}:{ban.user_id}",
+        )
+        async with self.database.transaction() as connection:
+            await self.bans_repo.deactivate_ban(chat_id=ban.chat_id, user_id=ban.user_id, connection=connection)
+            await self.punishments_repo.deactivate_entries(
+                chat_id=ban.chat_id,
+                target_user_id=ban.user_id,
+                action_types=(ActionType.BAN.value,),
                 connection=connection,
             )
 
@@ -498,10 +525,14 @@ class ModerationService:
         except Exception:
             self.logger.exception("Failed to compensate ban rollback for user %s in chat %s", user_id, chat_id)
 
-    async def _compensate_reban(self, *, bot: Bot, chat_id: int, user_id: int) -> None:
+    async def _compensate_reban(self, *, bot: Bot, chat_id: int, user_id: int, ends_at) -> None:
         try:
+            if ends_at is None:
+                ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+            else:
+                ban_operation = lambda: bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=ends_at)
             await call_with_retry(
-                lambda: bot.ban_chat_member(chat_id=chat_id, user_id=user_id),
+                ban_operation,
                 logger=self.logger,
                 retry=self.config.retry,
                 context=f"compensate-reban:{chat_id}:{user_id}",

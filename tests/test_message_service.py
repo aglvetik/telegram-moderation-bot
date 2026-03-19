@@ -23,6 +23,7 @@ def build_config() -> AppConfig:
         database=DatabaseConfig(path=Path("test.sqlite3")),
         scheduler=SchedulerConfig(
             expired_mute_check_seconds=60,
+            expired_ban_check_seconds=60,
             mute_verification_interval_seconds=300,
             cleanup_interval_seconds=86400,
             sqlite_backup_interval_seconds=21600,
@@ -88,6 +89,11 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("<code>кик</code> — удалить пользователя из чата", level_three_help)
         self.assertNotIn("<code>повысить</code>", level_three_help)
 
+    def test_level_zero_help_uses_short_neutral_text(self) -> None:
+        text = self.service.help_unavailable_for_level_zero()
+        self.assertIn("Полная справка по модерации доступна только назначенным модераторам.", text)
+        self.assertNotIn("<code>мут</code>", text)
+
     def test_group_and_channel_limit_messages_match_required_text(self) -> None:
         self.assertEqual(self.service.moderation_groups_only(), "ℹ️ Эта команда работает только в группах и супергруппах.")
         self.assertEqual(self.service.moderation_channels_only(), "ℹ️ Команды модерации пользователей недоступны в каналах.")
@@ -111,6 +117,7 @@ class MessageServiceTests(unittest.TestCase):
             "❌ Невозможно выполнить действие.\nЭтот пользователь является администратором.",
         )
         self.assertIn("Telegram ограничил выполнение операции", self.service.generic_action_failed())
+        self.assertIn("Обнаружены две разные цели команды.", self.service.conflicting_targets())
 
     def test_info_outputs_match_fixed_wording(self) -> None:
         self.assertEqual(
@@ -129,7 +136,6 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("📚 <b>История модерации пользователя</b>", empty_history)
         self.assertIn("Далее перечисляются последние действия модераторов.", empty_history)
         self.assertIn("Записей пока нет.", empty_history)
-
         self.assertEqual(self.service.active_mutes([]), "ℹ️ Сейчас в этом чате нет активных мутов.")
 
 

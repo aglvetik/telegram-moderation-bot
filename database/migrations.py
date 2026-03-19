@@ -165,6 +165,7 @@ async def run_migrations(database: Database) -> None:
                 chat_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 banned_at TEXT NOT NULL,
+                ends_at TEXT,
                 reason TEXT,
                 moderator_user_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -172,6 +173,7 @@ async def run_migrations(database: Database) -> None:
             );
             """
         )
+        await _ensure_column(connection, table_name="bans", column_name="ends_at", ddl="ends_at TEXT")
         await connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_bans_single_active
@@ -183,6 +185,13 @@ async def run_migrations(database: Database) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_bans_chat_user
             ON bans(chat_id, user_id);
+            """
+        )
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_bans_active_ends_at
+            ON bans(chat_id, ends_at)
+            WHERE is_active = 1 AND ends_at IS NOT NULL;
             """
         )
         await connection.execute(

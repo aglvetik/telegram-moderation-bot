@@ -8,6 +8,7 @@ Supports mute, kick, ban, internal moderation levels, moderation history, active
 - mute / unmute system
 - kick users
 - ban / unban users
+- timed bans with automatic unban and restart recovery
 - internal moderation levels (`1-5`)
 - support for reply / username / `user_id`
 - moderation action history
@@ -98,12 +99,14 @@ Copy-Item .env.example .env
 ```env
 BOT_TOKEN=your_token_here
 SYSTEM_OWNER_USER_ID=5300889569
+EXPIRED_BAN_CHECK_SECONDS=60
 ```
 
 Important configuration notes:
 
 - `BOT_TOKEN` is required
 - `SYSTEM_OWNER_USER_ID` is treated as the permanent internal level `5`
+- `EXPIRED_BAN_CHECK_SECONDS` controls how often the scheduler checks for expired timed bans
 - short-lived informational and error messages use the configured delete delay
 - moderation and level-change result messages are intentionally not auto-deleted
 

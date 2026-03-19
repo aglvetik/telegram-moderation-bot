@@ -12,7 +12,7 @@ from utils.constants import (
     MIN_ADMIN_LEVEL,
 )
 from utils.exceptions import ParseCommandError
-from utils.time_parser import is_duration_token, parse_duration_token, timedelta_to_seconds
+from utils.time_parser import match_duration_tokens, timedelta_to_seconds
 from utils.validators import (
     looks_like_username_token,
     normalize_command_text,
@@ -80,6 +80,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=False,
+                allow_duration=False,
             )
         if command in BOT_COMMAND_ALIASES["kick"]:
             return self._parse_target_command(
@@ -88,6 +89,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=True,
+                allow_duration=False,
             )
         if command in BOT_COMMAND_ALIASES["ban"]:
             return self._parse_target_command(
@@ -96,6 +98,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=True,
+                allow_duration=True,
             )
         if command in BOT_COMMAND_ALIASES["unban"]:
             return self._parse_target_command(
@@ -104,6 +107,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=False,
+                allow_duration=False,
             )
         if command in BOT_COMMAND_ALIASES["level"]:
             return self._parse_level(arguments, normalized, has_reply=has_reply)
@@ -126,6 +130,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=False,
+                allow_duration=False,
             )
         if command in BOT_COMMAND_ALIASES["history"]:
             return self._parse_target_command(
@@ -134,6 +139,7 @@ class ParserService:
                 normalized=normalized,
                 has_reply=has_reply,
                 allow_reason=False,
+                allow_duration=False,
             )
         if command in BOT_COMMAND_ALIASES["active_mutes"]:
             return ParsedCommand(kind=CommandKind.ACTIVE_MUTES, normalized_text=normalized)
@@ -141,38 +147,27 @@ class ParserService:
         raise ParseCommandError("❌ Неизвестная команда.")
 
     def _parse_mute(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
-        target_indexes = [index for index, token in enumerate(arguments) if self._looks_like_target(token)]
-        duration_indexes = [index for index, token in enumerate(arguments) if is_duration_token(token)]
-
-        if has_reply and target_indexes:
-            raise self._invalid_format(
-                "Если команда отправлена reply, не указывайте цель повторно.",
-                "мут",
-                "мут 1ч флуд",
-                "мут @username 1ч флуд",
-            )
-        if len(target_indexes) > 1:
-            raise self._ambiguous_target_error()
-        if len(duration_indexes) > 1:
-            raise self._invalid_format("Укажите только одну длительность мута.", "мут", "мут 1ч флуд", "мут @username 30м спам")
-        if not has_reply and not target_indexes:
+        duration_seconds, reserved_indexes = self._extract_optional_duration(
+            arguments,
+            summary="Укажите только одну длительность мута.",
+            examples=("мут 1ч флуд", "мут 30 минут @user"),
+        )
+        explicit_target, reserved_indexes = self._extract_optional_target(
+            arguments,
+            reserved_indexes=reserved_indexes,
+            has_reply=has_reply,
+            allow_reason=True,
+            command_examples=("мут 1ч флуд", "мут @username 30 минут флуд", "мут 30 минут @username"),
+        )
+        if not has_reply and explicit_target is None:
             raise self._target_required_error()
 
-        explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
-        duration_seconds = DEFAULT_MUTE_DURATION_SECONDS
-        reserved_indexes = set(target_indexes)
-
-        if duration_indexes:
-            reserved_indexes.add(duration_indexes[0])
-            duration_seconds = timedelta_to_seconds(parse_duration_token(arguments[duration_indexes[0]]))
-
-        reason_tokens = [token for index, token in enumerate(arguments) if index not in reserved_indexes]
-        reason = " ".join(reason_tokens).strip() or None
+        reason = self._build_reason(arguments, reserved_indexes)
         return ParsedCommand(
             kind=CommandKind.MUTE,
             normalized_text=normalized,
             explicit_target=explicit_target,
-            duration_seconds=duration_seconds,
+            duration_seconds=duration_seconds or DEFAULT_MUTE_DURATION_SECONDS,
             reason=reason,
         )
 
@@ -184,70 +179,90 @@ class ParserService:
         normalized: str,
         has_reply: bool,
         allow_reason: bool,
+        allow_duration: bool,
     ) -> ParsedCommand:
-        target_indexes = [index for index, token in enumerate(arguments) if self._looks_like_target(token)]
-        if has_reply and target_indexes:
-            raise self._invalid_format(
-                "Если команда отправлена reply, не указывайте цель повторно.",
-                self._example_command_for_kind(kind),
+        reserved_indexes: set[int] = set()
+        duration_seconds: int | None = None
+
+        if allow_duration:
+            duration_seconds, reserved_indexes = self._extract_optional_duration(
+                arguments,
+                summary="Укажите только одну длительность бана.",
+                examples=("бан @user 1 день", "бан 2 часа @user спам"),
             )
-        if len(target_indexes) > 1:
-            raise self._ambiguous_target_error()
-        if not has_reply and not target_indexes:
+
+        explicit_target, reserved_indexes = self._extract_optional_target(
+            arguments,
+            reserved_indexes=reserved_indexes,
+            has_reply=has_reply,
+            allow_reason=allow_reason,
+            command_examples=(self._example_command_for_kind(kind),),
+        )
+        if not has_reply and explicit_target is None:
             raise self._target_required_error()
 
-        reserved_indexes = set(target_indexes)
-        reason_tokens = [token for index, token in enumerate(arguments) if index not in reserved_indexes]
-        if reason_tokens and not allow_reason:
+        reason = self._build_reason(arguments, reserved_indexes)
+        if reason and not allow_reason:
             raise self._invalid_format(
                 "Не удалось безопасно разобрать аргументы команды.",
                 self._example_command_for_kind(kind),
             )
 
-        explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
-        reason = " ".join(reason_tokens).strip() or None
-        return ParsedCommand(kind=kind, normalized_text=normalized, explicit_target=explicit_target, reason=reason)
+        return ParsedCommand(
+            kind=kind,
+            normalized_text=normalized,
+            explicit_target=explicit_target,
+            duration_seconds=duration_seconds,
+            reason=reason,
+        )
 
     def _parse_level(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
         target_indexes, level_indexes, unknown_indexes = self._classify_level_arguments(arguments)
         self._ensure_level_arguments_are_safe(
             command_label="уровень",
-            arguments=arguments,
-            has_reply=has_reply,
             target_indexes=target_indexes,
             level_indexes=level_indexes,
             unknown_indexes=unknown_indexes,
         )
 
-        if has_reply and not arguments:
-            return ParsedCommand(kind=CommandKind.VIEW_LEVEL, normalized_text=normalized)
-        if has_reply and len(level_indexes) == 1:
+        explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
+        explicit_level = validate_assignable_admin_level(int(arguments[level_indexes[0]])) if level_indexes else None
+
+        if has_reply:
+            if explicit_level is None:
+                return ParsedCommand(
+                    kind=CommandKind.VIEW_LEVEL,
+                    normalized_text=normalized,
+                    explicit_target=explicit_target,
+                )
             return ParsedCommand(
                 kind=CommandKind.SET_LEVEL,
                 normalized_text=normalized,
-                level=validate_assignable_admin_level(int(arguments[level_indexes[0]])),
+                explicit_target=explicit_target,
+                level=explicit_level,
             )
-        if not has_reply and len(target_indexes) == 1 and not level_indexes:
+
+        if explicit_target and explicit_level is None:
             return ParsedCommand(
                 kind=CommandKind.VIEW_LEVEL,
                 normalized_text=normalized,
-                explicit_target=self._parse_target(arguments[target_indexes[0]]),
+                explicit_target=explicit_target,
             )
-        if not has_reply and len(target_indexes) == 1 and len(level_indexes) == 1:
+        if explicit_target and explicit_level is not None:
             return ParsedCommand(
                 kind=CommandKind.SET_LEVEL,
                 normalized_text=normalized,
-                explicit_target=self._parse_target(arguments[target_indexes[0]]),
-                level=validate_assignable_admin_level(int(arguments[level_indexes[0]])),
+                explicit_target=explicit_target,
+                level=explicit_level,
             )
-        if not has_reply and not target_indexes and len(level_indexes) == 1:
+        if explicit_level is not None:
             raise self._ambiguous_level_or_user_id_error(arguments[level_indexes[0]])
 
         raise self._invalid_format(
             "Не удалось безопасно определить цель и уровень.",
+            "уровень @user",
             "уровень @user 2",
             "уровень 2 @user",
-            "уровень @user",
             "уровень 3",
         )
 
@@ -260,67 +275,158 @@ class ParserService:
         has_reply: bool,
     ) -> ParsedCommand:
         implicit_delta = 1 if kind == CommandKind.RAISE_LEVEL else -1
+        command_label = "повысить" if kind == CommandKind.RAISE_LEVEL else "понизить"
+
         target_indexes, level_indexes, unknown_indexes = self._classify_level_arguments(arguments)
         self._ensure_level_arguments_are_safe(
-            command_label="повысить" if kind == CommandKind.RAISE_LEVEL else "понизить",
-            arguments=arguments,
-            has_reply=has_reply,
+            command_label=command_label,
             target_indexes=target_indexes,
             level_indexes=level_indexes,
             unknown_indexes=unknown_indexes,
         )
 
-        if has_reply and not arguments:
-            return ParsedCommand(kind=kind, normalized_text=normalized, level_delta=implicit_delta)
-        if has_reply and len(level_indexes) == 1:
+        explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
+        explicit_level = validate_assignable_admin_level(int(arguments[level_indexes[0]])) if level_indexes else None
+
+        if has_reply:
+            if explicit_level is not None:
+                return ParsedCommand(
+                    kind=kind,
+                    normalized_text=normalized,
+                    explicit_target=explicit_target,
+                    level=explicit_level,
+                )
+            if explicit_target is not None or not arguments:
+                return ParsedCommand(
+                    kind=kind,
+                    normalized_text=normalized,
+                    explicit_target=explicit_target,
+                    level_delta=implicit_delta,
+                )
+
+        if explicit_target and explicit_level is None:
             return ParsedCommand(
                 kind=kind,
                 normalized_text=normalized,
-                level=validate_assignable_admin_level(int(arguments[level_indexes[0]])),
-            )
-        if not has_reply and len(target_indexes) == 1 and not level_indexes:
-            return ParsedCommand(
-                kind=kind,
-                normalized_text=normalized,
-                explicit_target=self._parse_target(arguments[target_indexes[0]]),
+                explicit_target=explicit_target,
                 level_delta=implicit_delta,
             )
-        if not has_reply and len(target_indexes) == 1 and len(level_indexes) == 1:
+        if explicit_target and explicit_level is not None:
             return ParsedCommand(
                 kind=kind,
                 normalized_text=normalized,
-                explicit_target=self._parse_target(arguments[target_indexes[0]]),
-                level=validate_assignable_admin_level(int(arguments[level_indexes[0]])),
+                explicit_target=explicit_target,
+                level=explicit_level,
             )
-        if not has_reply and not target_indexes and len(level_indexes) == 1:
+        if explicit_level is not None:
             raise self._ambiguous_level_or_user_id_error(arguments[level_indexes[0]])
 
-        command = "повысить" if kind == CommandKind.RAISE_LEVEL else "понизить"
         raise self._invalid_format(
             "Не удалось безопасно определить цель и новый уровень.",
-            command,
-            f"{command} @user",
-            f"{command} @user 3" if kind == CommandKind.RAISE_LEVEL else f"{command} @user 1",
-            f"{command} 3 @user" if kind == CommandKind.RAISE_LEVEL else f"{command} 1 @user",
+            command_label,
+            f"{command_label} @user",
+            f"{command_label} @user 3" if kind == CommandKind.RAISE_LEVEL else f"{command_label} @user 1",
+            f"{command_label} 3 @user" if kind == CommandKind.RAISE_LEVEL else f"{command_label} 1 @user",
         )
 
     def _parse_remove_level(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
         target_indexes = [index for index, token in enumerate(arguments) if self._looks_like_target(token)]
+        if len(target_indexes) > 1:
+            raise self._ambiguous_target_error()
+        if len(target_indexes) == 1 and len(arguments) != 1:
+            raise self._invalid_format("Не удалось безопасно определить пользователя.", "снятьуровень", "снятьуровень @user")
+        if not has_reply and len(target_indexes) != 1:
+            raise self._invalid_format("Не удалось безопасно определить пользователя.", "снятьуровень @user")
         if has_reply and not arguments:
             return ParsedCommand(kind=CommandKind.REMOVE_LEVEL, normalized_text=normalized)
-        if has_reply and arguments:
-            raise self._invalid_format(
-                "Если команда отправлена reply, не указывайте цель повторно.",
-                "снятьуровень",
-                "снятьуровень @user",
+        if target_indexes:
+            return ParsedCommand(
+                kind=CommandKind.REMOVE_LEVEL,
+                normalized_text=normalized,
+                explicit_target=self._parse_target(arguments[target_indexes[0]]),
             )
-        if len(target_indexes) != 1 or len(arguments) != 1:
-            raise self._invalid_format("Не удалось безопасно определить пользователя.", "снятьуровень", "снятьуровень @user")
-        return ParsedCommand(
-            kind=CommandKind.REMOVE_LEVEL,
-            normalized_text=normalized,
-            explicit_target=self._parse_target(arguments[target_indexes[0]]),
-        )
+        raise self._invalid_format("Не удалось безопасно определить пользователя.", "снятьуровень", "снятьуровень @user")
+
+    def _extract_optional_duration(
+        self,
+        arguments: list[str],
+        *,
+        summary: str,
+        examples: tuple[str, ...],
+    ) -> tuple[int | None, set[int]]:
+        found_seconds: int | None = None
+        reserved_indexes: set[int] = set()
+        index = 0
+
+        while index < len(arguments):
+            match = match_duration_tokens(arguments, index)
+            if match is None:
+                index += 1
+                continue
+
+            duration, consumed = match
+            if any((index + offset) in reserved_indexes for offset in range(consumed)):
+                index += 1
+                continue
+            if found_seconds is not None:
+                raise self._invalid_format(summary, *examples)
+
+            found_seconds = timedelta_to_seconds(duration)
+            for offset in range(consumed):
+                reserved_indexes.add(index + offset)
+            index += consumed
+
+        return found_seconds, reserved_indexes
+
+    def _extract_optional_target(
+        self,
+        arguments: list[str],
+        *,
+        reserved_indexes: set[int],
+        has_reply: bool,
+        allow_reason: bool,
+        command_examples: tuple[str, ...],
+    ) -> tuple[TargetInput | None, set[int]]:
+        explicit_indexes = [
+            index
+            for index, token in enumerate(arguments)
+            if index not in reserved_indexes and self._is_explicit_target_marker(token)
+        ]
+        if len(explicit_indexes) > 1:
+            raise self._ambiguous_target_error()
+
+        target_index: int | None = None
+        if len(explicit_indexes) == 1:
+            target_index = explicit_indexes[0]
+        else:
+            bare_indexes = [
+                index
+                for index, token in enumerate(arguments)
+                if index not in reserved_indexes and looks_like_username_token(token.strip())
+            ]
+            if len(bare_indexes) > 1:
+                raise self._ambiguous_target_error()
+            if len(bare_indexes) == 1:
+                remaining_indexes = [index for index in range(len(arguments)) if index not in reserved_indexes]
+                if not has_reply and allow_reason and remaining_indexes == bare_indexes:
+                    raise self._invalid_format(
+                        "Не удалось безопасно понять, указан ли username или свободный текст.",
+                        *command_examples,
+                    )
+                target_index = bare_indexes[0]
+
+        if target_index is None:
+            return None, reserved_indexes
+
+        updated_reserved = set(reserved_indexes)
+        updated_reserved.add(target_index)
+        return self._parse_target(arguments[target_index]), updated_reserved
+
+    @staticmethod
+    def _build_reason(arguments: list[str], reserved_indexes: set[int]) -> str | None:
+        reason_tokens = [token for index, token in enumerate(arguments) if index not in reserved_indexes]
+        reason = " ".join(reason_tokens).strip()
+        return reason or None
 
     def _classify_level_arguments(self, arguments: list[str]) -> tuple[list[int], list[int], list[int]]:
         target_indexes: list[int] = []
@@ -347,8 +453,6 @@ class ParserService:
         self,
         *,
         command_label: str,
-        arguments: list[str],
-        has_reply: bool,
         target_indexes: list[int],
         level_indexes: list[int],
         unknown_indexes: list[int],
@@ -369,17 +473,16 @@ class ParserService:
                 f"{command_label} @user 2",
                 f"{command_label} 2 @user",
             )
-        if has_reply and target_indexes:
-            raise self._invalid_format(
-                "Если команда отправлена reply, не указывайте цель повторно.",
-                command_label,
-                f"{command_label} 2",
-            )
 
     @staticmethod
     def _looks_like_target(token: str) -> bool:
         stripped = token.strip()
         return stripped.isdigit() or stripped.startswith("@") or looks_like_username_token(stripped)
+
+    @staticmethod
+    def _is_explicit_target_marker(token: str) -> bool:
+        stripped = token.strip()
+        return stripped.isdigit() or stripped.startswith("@")
 
     @staticmethod
     def _parse_target(token: str) -> TargetInput:
@@ -393,7 +496,13 @@ class ParserService:
 
     @staticmethod
     def _target_required_error() -> ParseCommandError:
-        return ParseCommandError("❌ Не удалось определить пользователя.\nИспользуйте reply, username или user_id.")
+        return ParseCommandError(
+            "❌ Не удалось определить пользователя.\n"
+            "Укажите цель одним из способов:\n"
+            "• ответом на сообщение\n"
+            "• username\n"
+            "• user_id"
+        )
 
     @staticmethod
     def _ambiguous_target_error() -> ParseCommandError:
@@ -422,8 +531,8 @@ class ParserService:
     def _example_command_for_kind(kind: CommandKind) -> str:
         examples = {
             CommandKind.UNMUTE: "анмут @user",
-            CommandKind.KICK: "кик @user",
-            CommandKind.BAN: "бан @user причина",
+            CommandKind.KICK: "кик @user причина",
+            CommandKind.BAN: "бан @user 1 день причина",
             CommandKind.UNBAN: "разбан @user",
             CommandKind.INFO: "инфо @user",
             CommandKind.HISTORY: "история @user",

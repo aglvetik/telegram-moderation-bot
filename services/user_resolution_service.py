@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 from aiogram import Bot
 from aiogram.types import ChatMember, ChatMemberUpdated, Message, User
@@ -13,8 +13,11 @@ from database.repositories.message_refs_repo import MessageRefsRepository
 from database.repositories.users_repo import UsersRepository
 from services.parser_service import ParsedCommand, TargetInput
 from utils.exceptions import TargetResolutionError
-from utils.formatters import build_display_name, utc_now
+from utils.formatters import utc_now
 from utils.telegram_helpers import build_user_display_name, safe_get_chat_member, timestamp_to_datetime
+
+if TYPE_CHECKING:
+    from services.message_service import MessageService
 
 
 @dataclass(slots=True)
@@ -36,11 +39,13 @@ class UserResolutionService:
         chats_repo: ChatsRepository,
         users_repo: UsersRepository,
         message_refs_repo: MessageRefsRepository,
+        message_service: MessageService,
     ) -> None:
         self.database = database
         self.chats_repo = chats_repo
         self.users_repo = users_repo
         self.message_refs_repo = message_refs_repo
+        self.message_service = message_service
         self.logger = logging.getLogger(__name__)
 
     async def ingest_message(self, message: Message) -> None:
@@ -101,15 +106,18 @@ class UserResolutionService:
         )
 
     async def resolve_target(self, bot: Bot, message: Message, parsed: ParsedCommand) -> ResolvedUser:
+        reply_target: ResolvedUser | None = None
+        explicit_target: ResolvedUser | None = None
+
         if message.reply_to_message:
-            resolved = await self._resolve_reply_target(bot, message)
-            await self.remember_resolved(resolved, chat_id=message.chat.id)
-            return resolved
+            reply_target = await self._resolve_reply_target(bot, message)
+        if parsed.explicit_target is not None:
+            explicit_target = await self._resolve_explicit_target(bot, message.chat.id, parsed.explicit_target)
 
-        if parsed.explicit_target is None:
-            raise TargetResolutionError("❌ Не удалось определить пользователя.\nИспользуйте reply, username или user_id.")
+        resolved = self._merge_targets(reply_target=reply_target, explicit_target=explicit_target)
+        if resolved is None:
+            raise TargetResolutionError(self.message_service.target_not_found())
 
-        resolved = await self._resolve_explicit_target(bot, message.chat.id, parsed.explicit_target)
         await self.remember_resolved(resolved, chat_id=message.chat.id)
         return resolved
 
@@ -165,21 +173,18 @@ class UserResolutionService:
                 resolved.source = "message_ref"
                 return resolved
 
-        raise TargetResolutionError("❌ Не удалось определить пользователя.\nПопробуйте команду по username или user_id.")
+        raise TargetResolutionError(self.message_service.target_not_found())
 
     async def _resolve_explicit_target(self, bot: Bot, chat_id: int, target: TargetInput) -> ResolvedUser:
         if target.user_id is not None:
             return await self.resolve_user_id(bot, chat_id, target.user_id)
 
         if target.username is None:
-            raise TargetResolutionError("❌ Не удалось определить пользователя.\nИспользуйте reply, username или user_id.")
+            raise TargetResolutionError(self.message_service.target_not_found())
 
         cached = await self.users_repo.get_by_username(target.username)
         if cached is None:
-            raise TargetResolutionError(
-                "❌ Не удалось найти пользователя по username.\n"
-                "Возможно, он недоступен боту. Попробуйте reply или user_id."
-            )
+            raise TargetResolutionError(self.message_service.username_resolution_failed())
 
         member = await safe_get_chat_member(bot, chat_id, cached.user_id)
         return ResolvedUser(
@@ -188,6 +193,26 @@ class UserResolutionService:
             display_name=cached.display_name,
             source="username",
             member=member,
+        )
+
+    def _merge_targets(
+        self,
+        *,
+        reply_target: ResolvedUser | None,
+        explicit_target: ResolvedUser | None,
+    ) -> ResolvedUser | None:
+        if reply_target is None:
+            return explicit_target
+        if explicit_target is None:
+            return reply_target
+        if reply_target.user_id != explicit_target.user_id:
+            raise TargetResolutionError(self.message_service.conflicting_targets())
+        return ResolvedUser(
+            user_id=reply_target.user_id,
+            username=reply_target.username or explicit_target.username,
+            display_name=reply_target.display_name if reply_target.display_name and not reply_target.display_name.startswith("ID ") else explicit_target.display_name,
+            source="reply+explicit",
+            member=reply_target.member or explicit_target.member,
         )
 
     async def hydrate_display_name(self, user_id: int) -> str:

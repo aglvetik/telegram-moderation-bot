@@ -71,6 +71,7 @@ async def build_services(config: AppConfig) -> tuple[Database, ServiceContainer]
         chats_repo=chats_repo,
         users_repo=users_repo,
         message_refs_repo=message_refs_repo,
+        message_service=message_service,
     )
     parser_service = ParserService()
     moderation_service = ModerationService(

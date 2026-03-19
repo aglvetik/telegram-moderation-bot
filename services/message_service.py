@@ -175,6 +175,13 @@ class MessageService:
             "• user_id"
         )
 
+    def conflicting_targets(self) -> str:
+        return (
+            "❌ Обнаружены две разные цели команды.\n"
+            "Если вы отвечаете на сообщение, бот использует автора этого сообщения.\n"
+            "Уберите лишний username/user_id или оставьте только одну цель."
+        )
+
     def username_resolution_failed(self) -> str:
         return (
             "❌ <b>Пользователь по указанному username не найден.</b>\n\n"
@@ -379,6 +386,12 @@ class MessageService:
             ]
         )
         return "\n".join(lines)
+
+    def help_unavailable_for_level_zero(self) -> str:
+        return (
+            "ℹ️ Полная справка по модерации доступна только назначенным модераторам.\n"
+            "Если вам нужна работа с командами бота, обратитесь к администрации чата."
+        )
 
     def user_info(
         self,

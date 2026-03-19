@@ -41,7 +41,14 @@ class SchedulerService:
         self._tasks: list[asyncio.Task] = []
 
     async def recover(self, bot: Bot) -> None:
-        self.logger.info("Starting mute recovery pass")
+        self.logger.info("Starting moderation recovery pass")
+        expired_bans = await self.bans_repo.list_expired_bans(to_iso(utc_now()) or "")
+        for ban in expired_bans:
+            try:
+                await self.moderation_service.expire_ban(bot=bot, ban=ban)
+            except Exception:
+                self.logger.exception("Failed to expire ban during recovery for user %s in chat %s", ban.user_id, ban.chat_id)
+
         expired = await self.mutes_repo.list_expired_mutes(to_iso(utc_now()) or "")
         for mute in expired:
             try:
@@ -59,6 +66,13 @@ class SchedulerService:
     def start(self, bot: Bot) -> None:
         self._stop_event.clear()
         self._tasks = [
+            asyncio.create_task(
+                self._loop(
+                    "expired-bans",
+                    self.config.scheduler.expired_ban_check_seconds,
+                    lambda: self._process_expired_bans(bot),
+                )
+            ),
             asyncio.create_task(
                 self._loop(
                     "expired-mutes",
@@ -124,6 +138,14 @@ class SchedulerService:
                 await self.moderation_service.expire_mute(bot=bot, mute=mute)
             except Exception:
                 self.logger.exception("Failed to process expired mute for user %s in chat %s", mute.user_id, mute.chat_id)
+
+    async def _process_expired_bans(self, bot: Bot) -> None:
+        expired = await self.bans_repo.list_expired_bans(to_iso(utc_now()) or "")
+        for ban in expired:
+            try:
+                await self.moderation_service.expire_ban(bot=bot, ban=ban)
+            except Exception:
+                self.logger.exception("Failed to process expired ban for user %s in chat %s", ban.user_id, ban.chat_id)
 
     async def _verify_active_mutes(self, bot: Bot) -> None:
         active = await self.mutes_repo.list_active_mutes()

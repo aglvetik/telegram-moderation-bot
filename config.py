@@ -17,6 +17,7 @@ class RetryConfig:
 @dataclass(slots=True)
 class SchedulerConfig:
     expired_mute_check_seconds: int
+    expired_ban_check_seconds: int
     mute_verification_interval_seconds: int
     cleanup_interval_seconds: int
     sqlite_backup_interval_seconds: int
@@ -114,6 +115,7 @@ def load_config() -> AppConfig:
         database=DatabaseConfig(path=database_path),
         scheduler=SchedulerConfig(
             expired_mute_check_seconds=_get_int("EXPIRED_MUTE_CHECK_SECONDS", 60, minimum=10),
+            expired_ban_check_seconds=_get_int("EXPIRED_BAN_CHECK_SECONDS", 60, minimum=10),
             mute_verification_interval_seconds=_get_int("MUTE_VERIFICATION_INTERVAL_SECONDS", 300, minimum=30),
             cleanup_interval_seconds=_get_int("CLEANUP_INTERVAL_SECONDS", 86400, minimum=300),
             sqlite_backup_interval_seconds=_get_int("SQLITE_BACKUP_INTERVAL_SECONDS", 21600, minimum=300),

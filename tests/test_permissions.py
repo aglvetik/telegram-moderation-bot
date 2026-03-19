@@ -32,6 +32,7 @@ def build_test_config(*, system_owner_user_id: int | None = None) -> AppConfig:
         database=DatabaseConfig(path=Path("test.sqlite3")),
         scheduler=SchedulerConfig(
             expired_mute_check_seconds=60,
+            expired_ban_check_seconds=60,
             mute_verification_interval_seconds=300,
             cleanup_interval_seconds=86400,
             sqlite_backup_interval_seconds=21600,
