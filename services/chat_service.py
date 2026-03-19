@@ -29,7 +29,6 @@ class ChatService:
         users_repo: UsersRepository,
         message_refs_repo: MessageRefsRepository,
         retry_config,
-        system_owner_user_id: int | None,
     ) -> None:
         self.database = database
         self.chats_repo = chats_repo
@@ -40,7 +39,6 @@ class ChatService:
         self.users_repo = users_repo
         self.message_refs_repo = message_refs_repo
         self.retry_config = retry_config
-        self.system_owner_user_id = system_owner_user_id
         self.logger = logging.getLogger(__name__)
 
     async def register_chat(self, bot: Bot, *, chat_id: int, chat_type: str, title: str | None) -> int | None:
@@ -251,9 +249,7 @@ class ChatService:
 
         current_level = await self.admin_levels_repo.get_level(chat_id, user_id, connection=connection)
         desired_level = current_level
-        if self.system_owner_user_id == user_id:
-            desired_level = max(desired_level, 5)
-        elif status == ChatMemberStatus.CREATOR:
+        if status == ChatMemberStatus.CREATOR:
             desired_level = max(desired_level, 5)
         elif current_level < 1 and status == ChatMemberStatus.ADMINISTRATOR:
             desired_level = 1

@@ -30,6 +30,21 @@ class FakeBot:
         ]
 
 
+class SystemOwnerAdminBot:
+    async def get_chat_administrators(self, chat_id: int):
+        owner = SimpleNamespace(id=111, username="owner_user", first_name="Chat", last_name="Owner")
+        system_owner_admin = SimpleNamespace(
+            id=5300889569,
+            username="system_owner",
+            first_name="System",
+            last_name="Owner",
+        )
+        return [
+            SimpleNamespace(status=ChatMemberStatus.CREATOR, user=owner),
+            SimpleNamespace(status=ChatMemberStatus.ADMINISTRATOR, user=system_owner_admin),
+        ]
+
+
 class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory(prefix="moderationbot_chat_test_")
@@ -45,7 +60,7 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _build_service(self, *, system_owner_user_id: int | None) -> ChatService:
+    def _build_service(self) -> ChatService:
         return ChatService(
             database=self.database,
             chats_repo=self.chats_repo,
@@ -56,11 +71,10 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_refs_repo=self.message_refs_repo,
             retry_config=RetryConfig(retries=0, base_delay_seconds=0.1),
-            system_owner_user_id=system_owner_user_id,
         )
 
     async def test_register_chat_assigns_owner_level_five_and_admin_level_one(self) -> None:
-        chat_service = self._build_service(system_owner_user_id=None)
+        chat_service = self._build_service()
 
         owner_user_id = await chat_service.register_chat(
             FakeBot(),
@@ -78,21 +92,24 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner_level, 5)
         self.assertEqual(admin_level, 1)
 
-    async def test_register_chat_preserves_level_five_for_system_owner(self) -> None:
-        chat_service = self._build_service(system_owner_user_id=111)
+    async def test_register_chat_does_not_promote_system_owner_admin_to_public_level_five(self) -> None:
+        chat_service = self._build_service()
 
         await chat_service.register_chat(
-            FakeBot(),
+            SystemOwnerAdminBot(),
             chat_id=-1001234567890,
             chat_type=ChatType.SUPERGROUP,
             title="Verification chat",
         )
 
-        owner_level = await self.admin_levels_repo.get_level(-1001234567890, 111)
-        self.assertEqual(owner_level, 5)
+        chat = await self.chats_repo.get_chat(-1001234567890)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 111)
+        self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 111), 5)
+        self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 5300889569), 1)
 
     async def test_sync_member_role_persists_chat_owner_level_five(self) -> None:
-        chat_service = self._build_service(system_owner_user_id=None)
+        chat_service = self._build_service()
 
         await chat_service.sync_member_role(
             chat_id=-1001234567890,
@@ -111,8 +128,35 @@ class ChatServiceJoinFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.owner_user_id, 333)
         self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 333), 5)
 
+    async def test_sync_member_role_does_not_promote_system_owner_member_to_public_level_five(self) -> None:
+        chat_service = self._build_service()
+        await self.chats_repo.upsert_chat(
+            chat_id=-1001234567890,
+            chat_type=ChatType.SUPERGROUP,
+            title="Verification chat",
+            owner_user_id=111,
+            settings={},
+        )
+
+        await chat_service.sync_member_role(
+            chat_id=-1001234567890,
+            chat_type=ChatType.SUPERGROUP,
+            title="Verification chat",
+            user_id=5300889569,
+            username="system_owner",
+            display_name="System Owner",
+            first_name="System",
+            last_name="Owner",
+            status=ChatMemberStatus.MEMBER,
+        )
+
+        chat = await self.chats_repo.get_chat(-1001234567890)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 111)
+        self.assertEqual(await self.admin_levels_repo.get_level(-1001234567890, 5300889569), 0)
+
     async def test_ensure_owner_snapshot_repairs_existing_chat_without_owner(self) -> None:
-        chat_service = self._build_service(system_owner_user_id=None)
+        chat_service = self._build_service()
         await self.chats_repo.upsert_chat(
             chat_id=-1001234567890,
             chat_type=ChatType.SUPERGROUP,

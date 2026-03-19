@@ -302,9 +302,6 @@ class PermissionService:
         user_id: int,
         member=None,
     ) -> None:
-        if self.is_system_owner(user_id):
-            return
-
         chat_record = await self.chats_repo.get_chat(chat_id)
         if chat_record and chat_record.owner_user_id == user_id:
             return
@@ -324,6 +321,9 @@ class PermissionService:
                     first_name=owner_user.first_name,
                     last_name=owner_user.last_name,
                 )
+            return
+
+        if self.is_system_owner(user_id):
             return
 
         if (chat_record is None or chat_record.owner_user_id is None) and bot is not None and self.chat_service is not None:

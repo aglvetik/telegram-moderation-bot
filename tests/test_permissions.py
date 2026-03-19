@@ -154,7 +154,6 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             users_repo=self.users_repo,
             message_refs_repo=self.message_refs_repo,
             retry_config=RetryConfig(retries=0, base_delay_seconds=0.1),
-            system_owner_user_id=None,
         )
         self.permission_service = PermissionService(
             database=self.database,
@@ -425,6 +424,37 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await owner_service.get_my_level(self.chat_id, SimpleNamespace(id=5300889569)), 0)
         self.assertEqual(await owner_service.get_effective_level(self.chat_id, 5300889569), 5)
 
+    async def test_system_owner_member_rejoin_does_not_persist_public_level_five(self) -> None:
+        owner_service = PermissionService(
+            database=self.database,
+            admin_levels_repo=self.admin_levels_repo,
+            chats_repo=self.chats_repo,
+            punishments_repo=self.punishments_repo,
+            users_repo=self.users_repo,
+            message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
+            system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
+        )
+
+        await self.chat_service.sync_member_role(
+            chat_id=self.chat_id,
+            chat_type=ChatType.SUPERGROUP,
+            title="Permissions chat",
+            user_id=5300889569,
+            username="system_owner",
+            display_name="System Owner",
+            first_name="System",
+            last_name="Owner",
+            status=ChatMemberStatus.MEMBER,
+        )
+
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertIsNotNone(chat)
+        self.assertIsNone(chat.owner_user_id)
+        self.assertEqual(await self.admin_levels_repo.get_level(self.chat_id, 5300889569), 0)
+        self.assertEqual(await owner_service.get_my_level(self.chat_id, SimpleNamespace(id=5300889569)), 0)
+        self.assertEqual(await owner_service.get_effective_level(self.chat_id, 5300889569), 5)
+
     async def test_real_chat_owner_has_public_and_effective_level_five(self) -> None:
         await self.chats_repo.update_owner(self.chat_id, 77)
         self.assertEqual(await self.permission_service.get_level(self.chat_id, 77), 5)
@@ -452,6 +482,33 @@ class PermissionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(chat)
         self.assertEqual(chat.owner_user_id, 79)
         self.assertEqual(await self.admin_levels_repo.get_level(self.chat_id, 79), 5)
+
+    async def test_system_owner_gets_public_level_five_only_if_actually_creator(self) -> None:
+        owner_service = PermissionService(
+            database=self.database,
+            admin_levels_repo=self.admin_levels_repo,
+            chats_repo=self.chats_repo,
+            punishments_repo=self.punishments_repo,
+            users_repo=self.users_repo,
+            message_service=MessageService(build_test_config(system_owner_user_id=5300889569)),
+            system_owner_user_id=5300889569,
+            chat_service=self.chat_service,
+        )
+        creator_member = make_member(5300889569, status=ChatMemberStatus.CREATOR)
+        bot = FakeBot(
+            {
+                5300889569: creator_member,
+                999: make_member(999, status=ChatMemberStatus.ADMINISTRATOR, can_restrict_members=True),
+            }
+        )
+
+        level = await owner_service.get_my_level(self.chat_id, SimpleNamespace(id=5300889569), bot=bot)
+
+        chat = await self.chats_repo.get_chat(self.chat_id)
+        self.assertEqual(level, 5)
+        self.assertIsNotNone(chat)
+        self.assertEqual(chat.owner_user_id, 5300889569)
+        self.assertEqual(await self.admin_levels_repo.get_level(self.chat_id, 5300889569), 5)
 
     async def test_lazy_owner_refresh_repairs_missing_owner_for_level_info(self) -> None:
         owner_member = make_member(80, status=ChatMemberStatus.CREATOR)

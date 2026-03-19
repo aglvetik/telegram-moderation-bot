@@ -102,7 +102,6 @@ async def build_services(config: AppConfig) -> tuple[Database, ServiceContainer]
         users_repo=users_repo,
         message_refs_repo=message_refs_repo,
         retry_config=config.retry,
-        system_owner_user_id=config.system_owner_user_id,
     )
     permission_service = PermissionService(
         database=database,
