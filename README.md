@@ -278,4 +278,4 @@ For the most reliable targeting, prefer:
 
 - user-facing bot messages are implemented in Russian
 - persistence is SQLite-first, with repositories prepared for future database evolution
-- startup includes migration execution, mute recovery, and scheduler bootstrap
+- startup includes migration execution, mute recovery, and scheduler bootstrap 
