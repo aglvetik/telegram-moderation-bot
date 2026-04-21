@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from aiogram.enums import ParseMode
 
@@ -42,20 +44,6 @@ class MessageServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = MessageService(build_config())
         self.user = ResolvedUser(user_id=1, username="user", display_name="Test User")
-
-    def test_ordinary_messages_keep_short_auto_delete(self) -> None:
-        ordinary_categories = {
-            MessageCategory.TRANSIENT_ERROR,
-            MessageCategory.TRANSIENT_SERVICE,
-            MessageCategory.INFO_OUTPUT,
-            MessageCategory.HISTORY_OUTPUT,
-            MessageCategory.HELP_OUTPUT,
-        }
-        for category in ordinary_categories:
-            self.assertEqual(self.service.delete_delay_for_category(category), 60)
-
-    def test_punishment_result_messages_are_not_auto_deleted(self) -> None:
-        self.assertIsNone(self.service.delete_delay_for_category(MessageCategory.MODERATION_RESULT))
 
     def test_permanent_mute_messages_use_bessrochno(self) -> None:
         mute_text = self.service.mute_success(self.user, self.user, None, "Причина не указана")
@@ -142,6 +130,43 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("Далее перечисляются последние действия модераторов.", empty_history)
         self.assertIn("Записей пока нет.", empty_history)
         self.assertEqual(self.service.active_mutes([]), "ℹ️ Сейчас в этом чате нет активных мутов.")
+
+
+class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_reply_is_not_scheduled_for_auto_delete(self) -> None:
+        service = MessageService(build_config())
+        sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=123)
+        message = SimpleNamespace(answer=AsyncMock(return_value=sent))
+        bot = SimpleNamespace()
+
+        with patch("services.message_service.asyncio.create_task") as create_task_mock:
+            result = await service.reply(
+                bot=bot,
+                message=message,
+                text="test",
+                category=MessageCategory.TRANSIENT_ERROR,
+            )
+
+        self.assertIs(result, sent)
+        message.answer.assert_awaited_once_with("test")
+        create_task_mock.assert_not_called()
+
+    async def test_bot_send_to_chat_is_not_scheduled_for_auto_delete(self) -> None:
+        service = MessageService(build_config())
+        sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=124)
+        bot = SimpleNamespace(send_message=AsyncMock(return_value=sent))
+
+        with patch("services.message_service.asyncio.create_task") as create_task_mock:
+            result = await service.send_to_chat(
+                bot=bot,
+                chat_id=-1001,
+                text="test",
+                category=MessageCategory.HELP_OUTPUT,
+            )
+
+        self.assertIs(result, sent)
+        bot.send_message.assert_awaited_once_with(-1001, "test")
+        create_task_mock.assert_not_called()
 
 
 if __name__ == "__main__":

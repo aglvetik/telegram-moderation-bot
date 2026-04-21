@@ -14,19 +14,6 @@ class MessageCategory(StrEnum):
     HELP_OUTPUT = "help_output"
 
 
-AUTO_DELETE_MESSAGE_CATEGORIES = frozenset(
-    {
-        MessageCategory.TRANSIENT_ERROR,
-        MessageCategory.TRANSIENT_SERVICE,
-        MessageCategory.INFO_OUTPUT,
-        MessageCategory.HISTORY_OUTPUT,
-        MessageCategory.HELP_OUTPUT,
-    }
-)
-
-PERSISTENT_MESSAGE_CATEGORIES = frozenset({MessageCategory.MODERATION_RESULT})
-
-
 BOT_COMMAND_ALIASES = {
     "mute": {"мут", "м"},
     "unmute": {"анмут"},

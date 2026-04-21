@@ -13,7 +13,7 @@ Supports mute, kick, ban, internal moderation levels, moderation history, active
 - support for reply / username / `user_id`
 - moderation action history
 - active mute tracking and recovery after restart
-- automatic cleanup policy for short-lived bot messages
+- optional cleanup for user command messages
 - configurable `SYSTEM_OWNER_USER_ID`
 - SQLite persistence with repository-based architecture
 - long polling runtime for stable VPS deployment
@@ -107,8 +107,8 @@ Important configuration notes:
 - `BOT_TOKEN` is required
 - `SYSTEM_OWNER_USER_ID` is treated as the permanent internal level `5`
 - `EXPIRED_BAN_CHECK_SECONDS` controls how often the scheduler checks for expired timed bans
-- short-lived informational and error messages use the configured delete delay
-- moderation and level-change result messages are intentionally not auto-deleted
+- bot-generated messages are not auto-deleted
+- `DELETE_COMMAND_MESSAGES`, if enabled, applies only to user command messages, not messages sent by the bot
 
 ## Running the Bot
 

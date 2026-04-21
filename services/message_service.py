@@ -11,18 +11,16 @@ from config import AppConfig
 from database.models import ActiveMuteRecord, PunishmentRecord
 from services.user_resolution_service import ResolvedUser
 from utils.constants import (
-    AUTO_DELETE_MESSAGE_CATEGORIES,
     DEFAULT_REASON,
     HISTORY_ACTION_LABELS,
     MessageCategory,
-    PERSISTENT_MESSAGE_CATEGORIES,
 )
 from utils.formatters import format_datetime_ru, format_username, humanize_duration, mention_html
 from utils.telegram_helpers import delete_message_later
 
 
 class MessageService:
-    """Generates user-facing texts and applies the centralized bot message deletion policy."""
+    """Generates user-facing texts and sends bot messages without self-message cleanup."""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -37,7 +35,6 @@ class MessageService:
         category: MessageCategory,
     ) -> Message:
         sent = await message.answer(text)
-        self._schedule_auto_delete(bot=bot, message=sent, category=category)
         return sent
 
     async def send_to_chat(
@@ -49,7 +46,6 @@ class MessageService:
         category: MessageCategory,
     ) -> Message:
         sent = await bot.send_message(chat_id, text)
-        self._schedule_auto_delete(bot=bot, message=sent, category=category)
         return sent
 
     async def maybe_delete_command(self, *, bot: Bot, message: Message) -> None:
@@ -60,27 +56,6 @@ class MessageService:
                 bot,
                 message,
                 delay_seconds=self.config.message_policy.command_delete_delay_seconds,
-                logger=self.logger,
-            )
-        )
-
-    def delete_delay_for_category(self, category: MessageCategory) -> int | None:
-        if category in PERSISTENT_MESSAGE_CATEGORIES:
-            return None
-        if category in AUTO_DELETE_MESSAGE_CATEGORIES:
-            return self.config.message_policy.ordinary_message_delete_seconds
-        self.logger.debug("Unknown message category %s; using ordinary auto-delete policy", category)
-        return self.config.message_policy.ordinary_message_delete_seconds
-
-    def _schedule_auto_delete(self, *, bot: Bot, message: Message, category: MessageCategory) -> None:
-        delay_seconds = self.delete_delay_for_category(category)
-        if delay_seconds is None or delay_seconds <= 0:
-            return
-        asyncio.create_task(
-            delete_message_later(
-                bot,
-                message,
-                delay_seconds=delay_seconds,
                 logger=self.logger,
             )
         )
