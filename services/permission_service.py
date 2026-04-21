@@ -15,7 +15,13 @@ from services.message_service import MessageService
 from services.user_resolution_service import ResolvedUser
 from utils.constants import LEVEL_FOUR_ASSIGNMENT_CAP, MAX_ASSIGNABLE_ADMIN_LEVEL, MODERATION_REQUIRED_LEVELS
 from utils.exceptions import PermissionDeniedError, TargetResolutionError, ValidationError
-from utils.telegram_helpers import is_active_chat_member, is_admin_member, member_has_restrict_rights, safe_get_chat_member
+from utils.telegram_helpers import (
+    is_active_chat_member,
+    is_admin_member,
+    member_has_delete_rights,
+    member_has_restrict_rights,
+    safe_get_chat_member,
+)
 
 if TYPE_CHECKING:
     from services.chat_service import ChatService
@@ -91,6 +97,31 @@ class PermissionService:
             raise PermissionDeniedError(self.message_service.target_admin_protected())
         if action in {"mute", "unmute", "kick"} and target.member is None:
             raise TargetResolutionError(self.message_service.target_unavailable())
+        return caller_level, target_level
+
+    async def ensure_cleanup_allowed(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        actor: User,
+        target: ResolvedUser,
+    ) -> tuple[int, int]:
+        required_level = MODERATION_REQUIRED_LEVELS["cleanup"]
+        caller_level, _ = await self._ensure_actor_ready(bot, chat_id, actor, required_level=required_level)
+        await self._ensure_bot_can_delete_messages(bot, chat_id)
+        await self._maybe_refresh_owner_state(bot=bot, chat_id=chat_id, user_id=target.user_id, member=target.member)
+
+        chat_record = await self.chats_repo.get_chat(chat_id)
+        target_level = await self._get_public_level(chat_id, target.user_id)
+        if target.user_id == actor.id:
+            raise PermissionDeniedError(self.message_service.target_is_self())
+        if target.user_id == bot.id:
+            raise PermissionDeniedError(self.message_service.target_is_bot())
+        if chat_record and chat_record.owner_user_id == target.user_id:
+            raise PermissionDeniedError(self.message_service.target_is_owner())
+        if target_level >= caller_level:
+            raise PermissionDeniedError(self.message_service.target_same_or_higher_level())
         return caller_level, target_level
 
     async def ensure_view_access(self, *, bot: Bot, chat_id: int, actor: User, required_level: int) -> int:
@@ -270,10 +301,18 @@ class PermissionService:
         return caller_level, actor_member
 
     async def _ensure_bot_can_do_action(self, bot: Bot, chat_id: int, action: str) -> None:
+        if action == "cleanup":
+            await self._ensure_bot_can_delete_messages(bot, chat_id)
+            return
         if action not in {"mute", "unmute", "kick", "ban", "unban"}:
             return
         bot_member = await safe_get_chat_member(bot, chat_id, bot.id)
         if not member_has_restrict_rights(bot_member):
+            raise PermissionDeniedError(self.message_service.bot_lacks_rights())
+
+    async def _ensure_bot_can_delete_messages(self, bot: Bot, chat_id: int) -> None:
+        bot_member = await safe_get_chat_member(bot, chat_id, bot.id)
+        if not member_has_delete_rights(bot_member):
             raise PermissionDeniedError(self.message_service.bot_lacks_rights())
 
     async def _get_effective_level(self, chat_id: int, user_id: int) -> int:

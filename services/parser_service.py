@@ -6,6 +6,8 @@ from enum import StrEnum
 
 from utils.constants import (
     BOT_COMMAND_ALIASES,
+    CLEANUP_ALL_TOKENS,
+    CLEANUP_MAX_MESSAGES,
     DEFAULT_MUTE_DURATION_SECONDS,
     MAX_ADMIN_LEVEL,
     MAX_ASSIGNABLE_ADMIN_LEVEL,
@@ -26,6 +28,7 @@ class CommandKind(StrEnum):
     KICK = "kick"
     BAN = "ban"
     UNBAN = "unban"
+    CLEANUP = "cleanup"
     SET_LEVEL = "set_level"
     RAISE_LEVEL = "raise_level"
     LOWER_LEVEL = "lower_level"
@@ -55,6 +58,8 @@ class ParsedCommand:
     reason: str | None = None
     level: int | None = None
     level_delta: int | None = None
+    cleanup_count: int | None = None
+    cleanup_all: bool = False
 
 
 class ParserService:
@@ -109,6 +114,8 @@ class ParserService:
                 allow_reason=False,
                 allow_duration=False,
             )
+        if command in BOT_COMMAND_ALIASES["cleanup"]:
+            return self._parse_cleanup(arguments, normalized, has_reply=has_reply)
         if command in BOT_COMMAND_ALIASES["level"]:
             return self._parse_level(arguments, normalized, has_reply=has_reply)
         if command in BOT_COMMAND_ALIASES["raise_level"]:
@@ -214,6 +221,78 @@ class ParserService:
             explicit_target=explicit_target,
             duration_seconds=duration_seconds,
             reason=reason,
+        )
+
+    def _parse_cleanup(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
+        del has_reply
+        target_indexes: list[int] = []
+        cleanup_count: int | None = None
+        cleanup_all = False
+        unknown_indexes: list[int] = []
+
+        for index, token in enumerate(arguments):
+            stripped = token.strip()
+            lowered = stripped.lower()
+
+            if lowered in CLEANUP_ALL_TOKENS:
+                if cleanup_all or cleanup_count is not None:
+                    raise self._invalid_format(
+                        "Укажите только один режим очистки: количество сообщений или «все».",
+                        "очистить @user 50",
+                        "очистить @user все",
+                    )
+                cleanup_all = True
+                continue
+
+            numeric_value = self._parse_signed_int(stripped)
+            if numeric_value is not None:
+                if 1 <= numeric_value <= CLEANUP_MAX_MESSAGES:
+                    if cleanup_all or cleanup_count is not None:
+                        raise self._invalid_format(
+                            "Укажите только одно количество сообщений для удаления.",
+                            "очистить @user 50",
+                            "удалить 50 @user",
+                        )
+                    cleanup_count = numeric_value
+                    continue
+                if numeric_value <= 0:
+                    raise self._invalid_format(
+                        "Количество сообщений должно быть от 1 до 100.",
+                        "очистить @user 10",
+                        "очистить @user все",
+                    )
+                if self._is_probable_user_id(stripped):
+                    target_indexes.append(index)
+                    continue
+                raise self._invalid_format(
+                    "За один раз можно удалить не больше 100 сообщений. Для полной очистки используйте «все».",
+                    "очистить @user 100",
+                    "очистить @user все",
+                )
+
+            if self._looks_like_target(stripped):
+                target_indexes.append(index)
+                continue
+
+            unknown_indexes.append(index)
+
+        if len(target_indexes) > 1:
+            raise self._ambiguous_target_error()
+        if unknown_indexes:
+            raise self._invalid_format(
+                "Для очистки укажите пользователя и режим: количество сообщений или «все».",
+                "очистить @user 50",
+                "очистить 50 @user",
+                "очистить @user все",
+            )
+
+        explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
+        return ParsedCommand(
+            kind=CommandKind.CLEANUP,
+            normalized_text=normalized,
+            explicit_target=explicit_target,
+            cleanup_count=cleanup_count,
+            cleanup_all=cleanup_all,
         )
 
     def _parse_level(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
@@ -485,6 +564,18 @@ class ParserService:
         return stripped.isdigit() or stripped.startswith("@")
 
     @staticmethod
+    def _parse_signed_int(token: str) -> int | None:
+        try:
+            return int(token)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_probable_user_id(token: str) -> bool:
+        stripped = token.strip()
+        return stripped.isdigit() and len(stripped) >= 6
+
+    @staticmethod
     def _parse_target(token: str) -> TargetInput:
         stripped = token.strip()
         if stripped.isdigit():
@@ -534,6 +625,7 @@ class ParserService:
             CommandKind.KICK: "кик @user причина",
             CommandKind.BAN: "бан @user 1 день причина",
             CommandKind.UNBAN: "разбан @user",
+            CommandKind.CLEANUP: "очистить @user 50",
             CommandKind.INFO: "инфо @user",
             CommandKind.HISTORY: "история @user",
         }

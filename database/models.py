@@ -14,6 +14,7 @@ class ActionType(StrEnum):
     KICK = "kick"
     BAN = "ban"
     UNBAN = "unban"
+    CLEANUP = "cleanup"
     SET_LEVEL = "set_level"
     REMOVE_LEVEL = "remove_level"
 

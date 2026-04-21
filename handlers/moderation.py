@@ -8,7 +8,7 @@ from filters import PlainCommandFilter
 from services import ServiceContainer
 from services.parser_service import CommandKind
 from utils.constants import BOT_COMMAND_ALIASES
-from utils.exceptions import UnsupportedChatError
+from utils.exceptions import UnsupportedChatError, ValidationError
 
 router = Router(name="moderation")
 
@@ -20,6 +20,7 @@ router = Router(name="moderation")
         | BOT_COMMAND_ALIASES["kick"]
         | BOT_COMMAND_ALIASES["ban"]
         | BOT_COMMAND_ALIASES["unban"]
+        | BOT_COMMAND_ALIASES["cleanup"]
     )
 )
 async def handle_moderation_command(message: Message, bot: Bot, services: ServiceContainer) -> None:
@@ -33,6 +34,38 @@ async def handle_moderation_command(message: Message, bot: Bot, services: Servic
 
     parsed = services.parser.parse(message.text, has_reply=message.reply_to_message is not None)
     moderator = services.users.build_actor(message.from_user)
+
+    if parsed.kind == CommandKind.CLEANUP:
+        if parsed.cleanup_count is None and not parsed.cleanup_all:
+            raise ValidationError(services.messages.cleanup_amount_required())
+        if message.reply_to_message is None and parsed.explicit_target is None:
+            raise ValidationError(services.messages.cleanup_target_required())
+
+        target = await services.users.resolve_target(bot, message, parsed)
+        await services.permissions.ensure_cleanup_allowed(
+            bot=bot,
+            chat_id=message.chat.id,
+            actor=message.from_user,
+            target=target,
+        )
+        result = await services.moderation.cleanup_messages(
+            bot=bot,
+            chat_id=message.chat.id,
+            moderator=moderator,
+            target=target,
+            count=parsed.cleanup_count,
+            delete_all=parsed.cleanup_all,
+        )
+        await services.messages.reply(
+            bot=bot,
+            message=message,
+            text=result.message,
+            category=result.category,
+        )
+        if result.delete_command:
+            await services.messages.maybe_delete_command(bot=bot, message=message)
+        return
+
     target = await services.users.resolve_target(bot, message, parsed)
 
     await services.permissions.ensure_moderation_allowed(

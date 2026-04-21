@@ -11,6 +11,7 @@ from config import AppConfig
 from database.models import ActiveMuteRecord, PunishmentRecord
 from services.user_resolution_service import ResolvedUser
 from utils.constants import (
+    AUTO_DELETE_MESSAGE_CATEGORIES,
     DEFAULT_REASON,
     HISTORY_ACTION_LABELS,
     MessageCategory,
@@ -20,7 +21,7 @@ from utils.telegram_helpers import delete_message_later
 
 
 class MessageService:
-    """Generates user-facing texts and sends bot messages without self-message cleanup."""
+    """Generates user-facing texts and applies centralized transient-message cleanup."""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -35,6 +36,7 @@ class MessageService:
         category: MessageCategory,
     ) -> Message:
         sent = await message.answer(text)
+        self._schedule_auto_delete(bot=bot, message=sent, category=category)
         return sent
 
     async def send_to_chat(
@@ -46,7 +48,20 @@ class MessageService:
         category: MessageCategory,
     ) -> Message:
         sent = await bot.send_message(chat_id, text)
+        self._schedule_auto_delete(bot=bot, message=sent, category=category)
         return sent
+
+    def _schedule_auto_delete(self, *, bot: Bot, message: Message, category: MessageCategory) -> None:
+        if category not in AUTO_DELETE_MESSAGE_CATEGORIES:
+            return
+        asyncio.create_task(
+            delete_message_later(
+                bot,
+                message,
+                delay_seconds=self.config.message_policy.ordinary_message_delete_seconds,
+                logger=self.logger,
+            )
+        )
 
     async def maybe_delete_command(self, *, bot: Bot, message: Message) -> None:
         if not self.config.message_policy.delete_command_messages:
@@ -352,6 +367,7 @@ class MessageService:
                     [
                         "• <code>бан</code> — заблокировать пользователя",
                         "• <code>разбан</code> — снять бан",
+                        "• <code>очистить</code> / <code>удалить</code> — удалить сообщения пользователя",
                         "",
                         "<b>Управление уровнями:</b>",
                         "• <code>повысить</code>",
@@ -457,4 +473,45 @@ class MessageService:
                 remaining = max(int((mute.ends_at - datetime.now(mute.ends_at.tzinfo)).total_seconds()), 0)
                 remaining_text = humanize_duration(max(remaining, 60))
             lines.append(f"• {self.user_link(user)} — ещё {remaining_text}")
+        return "\n".join(lines)
+
+    def cleanup_amount_required(self) -> str:
+        return (
+            "⚠️ Сначала укажите, сколько последних сообщений пользователя удалить, "
+            "или используйте режим <code>все</code>."
+        )
+
+    def cleanup_target_required(self) -> str:
+        return "⚠️ Сначала выберите пользователя, чьи сообщения нужно удалить."
+
+    def cleanup_result(
+        self,
+        target: ResolvedUser,
+        *,
+        requested_count: int | None,
+        delete_all: bool,
+        deleted_count: int,
+        failed_count: int,
+        scanned_count: int,
+    ) -> str:
+        if delete_all:
+            mode_text = "режим: все доступные сообщения из локальной истории бота"
+        else:
+            mode_text = f"запрошено последних сообщений: {requested_count}"
+
+        if scanned_count == 0:
+            return (
+                f"🧹 Сообщения пользователя {self.user_link(target)} не найдены среди доступных для удаления записей.\n"
+                "Бот может удалять только сообщения из этого чата, которые он уже видел и сохранил в локальной истории."
+            )
+
+        lines = [
+            f"🧹 Очистка сообщений пользователя {self.user_link(target)} завершена.",
+            f"• {mode_text}",
+            f"• удалено: <b>{deleted_count}</b>",
+        ]
+        if failed_count:
+            lines.append(f"• не удалось удалить: <b>{failed_count}</b>")
+        if requested_count is not None and scanned_count < requested_count:
+            lines.append(f"• найдено доступных сообщений: <b>{scanned_count}</b>")
         return "\n".join(lines)

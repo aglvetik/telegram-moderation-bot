@@ -71,6 +71,54 @@ class MessageRefsRepository:
         )
         return MessageRefRecord.from_row(row) if row else None
 
+    async def list_user_message_refs(
+        self,
+        *,
+        chat_id: int,
+        sender_user_id: int,
+        limit: int,
+        before_message_id: int | None = None,
+        connection: aiosqlite.Connection | None = None,
+    ) -> list[MessageRefRecord]:
+        if before_message_id is None:
+            rows = await self.database.fetchall(
+                """
+                SELECT *
+                FROM message_refs
+                WHERE chat_id = ? AND sender_user_id = ?
+                ORDER BY message_id DESC
+                LIMIT ?;
+                """,
+                (chat_id, sender_user_id, limit),
+                connection=connection,
+            )
+        else:
+            rows = await self.database.fetchall(
+                """
+                SELECT *
+                FROM message_refs
+                WHERE chat_id = ? AND sender_user_id = ? AND message_id < ?
+                ORDER BY message_id DESC
+                LIMIT ?;
+                """,
+                (chat_id, sender_user_id, before_message_id, limit),
+                connection=connection,
+            )
+        return [MessageRefRecord.from_row(row) for row in rows]
+
+    async def delete_message_ref(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        connection: aiosqlite.Connection | None = None,
+    ) -> None:
+        await self.database.execute(
+            "DELETE FROM message_refs WHERE chat_id = ? AND message_id = ?;",
+            (chat_id, message_id),
+            connection=connection,
+        )
+
     async def cleanup_old_records(self, cutoff_iso: str, *, connection: aiosqlite.Connection | None = None) -> None:
         await self.database.execute(
             "DELETE FROM message_refs WHERE message_date < ?;",

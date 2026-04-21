@@ -14,12 +14,21 @@ class MessageCategory(StrEnum):
     HELP_OUTPUT = "help_output"
 
 
+AUTO_DELETE_MESSAGE_CATEGORIES = frozenset(
+    {
+        MessageCategory.TRANSIENT_ERROR,
+        MessageCategory.TRANSIENT_SERVICE,
+    }
+)
+
+
 BOT_COMMAND_ALIASES = {
     "mute": {"мут", "м"},
     "unmute": {"анмут"},
     "kick": {"кик"},
     "ban": {"бан"},
     "unban": {"разбан"},
+    "cleanup": {"очистить", "удалить"},
     "level": {"уровень"},
     "raise_level": {"повысить"},
     "lower_level": {"понизить"},
@@ -38,6 +47,7 @@ MODERATION_REQUIRED_LEVELS = {
     "kick": 3,
     "ban": 4,
     "unban": 4,
+    "cleanup": 4,
     "view_level": 2,
     "manage_levels": 4,
     "moderators": 4,
@@ -56,6 +66,9 @@ LEVEL_FOUR_ASSIGNMENT_CAP = 3
 MIN_ADMIN_LEVEL = 0
 MAX_REASON_LENGTH = 300
 DEFAULT_MUTE_DURATION_SECONDS = 3600
+CLEANUP_MAX_MESSAGES = 100
+CLEANUP_BATCH_SIZE = 100
+CLEANUP_ALL_TOKENS = {"все", "всё", "вся"}
 TELEGRAM_FOREVER_WINDOW_MIN_SECONDS = 30
 TELEGRAM_FOREVER_WINDOW_MAX_SECONDS = 366 * 24 * 60 * 60
 DEFAULT_REASON = "Причина не указана"
@@ -67,6 +80,7 @@ HISTORY_ACTION_LABELS = {
     "kick": "кик",
     "ban": "бан",
     "unban": "разбан",
+    "cleanup": "очистка сообщений",
     "set_level": "изменение уровня",
     "remove_level": "снятие уровня",
 }

@@ -9,6 +9,7 @@ Supports mute, kick, ban, internal moderation levels, moderation history, active
 - kick users
 - ban / unban users
 - timed bans with automatic unban and restart recovery
+- user message cleanup for level `4+` moderators
 - internal moderation levels (`1-5`)
 - support for reply / username / `user_id`
 - moderation action history
@@ -107,7 +108,8 @@ Important configuration notes:
 - `BOT_TOKEN` is required
 - `SYSTEM_OWNER_USER_ID` is treated as the permanent internal level `5`
 - `EXPIRED_BAN_CHECK_SECONDS` controls how often the scheduler checks for expired timed bans
-- bot-generated messages are not auto-deleted
+- warning and validation bot messages are auto-deleted after `ORDINARY_MESSAGE_DELETE_SECONDS`
+- moderation results, help, start, info, history, level outputs, and cleanup results remain persistent
 - `DELETE_COMMAND_MESSAGES`, if enabled, applies only to user command messages, not messages sent by the bot
 
 ## Running the Bot
@@ -264,6 +266,7 @@ journalctl -u moderationbot -f
 This project stays honest about Telegram limitations:
 
 - the bot cannot browse arbitrary old chat history retroactively
+- cleanup uses only messages the bot has already seen and stored in the lightweight message reference cache
 - username lookup works only for users the bot has already seen and cached
 - moderation actions against chat owners or some admins may still be blocked by Telegram itself
 - user moderation commands do not work in channels

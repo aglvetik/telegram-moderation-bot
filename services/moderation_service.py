@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramAPIError
 
 from config import AppConfig
 from database.db import Database
 from database.models import ActionType, ActiveMuteRecord, BanRecord
 from database.repositories.bans_repo import BansRepository
+from database.repositories.message_refs_repo import MessageRefsRepository
 from database.repositories.mutes_repo import MutesRepository
 from database.repositories.punishments_repo import PunishmentsRepository
 from database.repositories.users_repo import UsersRepository
 from services.message_service import MessageService
 from services.user_resolution_service import ResolvedUser
 from utils.constants import (
+    CLEANUP_BATCH_SIZE,
     DEFAULT_MUTE_DURATION_SECONDS,
     MessageCategory,
     TELEGRAM_FOREVER_WINDOW_MAX_SECONDS,
@@ -60,6 +64,7 @@ class ModerationService:
         punishments_repo: PunishmentsRepository,
         users_repo: UsersRepository,
         message_service: MessageService,
+        message_refs_repo: MessageRefsRepository | None = None,
     ) -> None:
         self.config = config
         self.database = database
@@ -68,6 +73,7 @@ class ModerationService:
         self.punishments_repo = punishments_repo
         self.users_repo = users_repo
         self.message_service = message_service
+        self.message_refs_repo = message_refs_repo
         self.logger = logging.getLogger(__name__)
 
     async def mute(
@@ -417,6 +423,93 @@ class ModerationService:
             raise DatabaseOperationError("❌ Не удалось обновить базу данных после разбана.") from exc
         return ActionResult(message=self.message_service.unban_success(target))
 
+    async def cleanup_messages(
+        self,
+        *,
+        bot: Bot,
+        chat_id: int,
+        moderator: ResolvedUser,
+        target: ResolvedUser,
+        count: int | None,
+        delete_all: bool,
+    ) -> ActionResult:
+        if self.message_refs_repo is None:
+            raise DatabaseOperationError("❌ Не удалось выполнить очистку: хранилище сообщений недоступно.")
+
+        await self._ensure_hierarchy_allowed(
+            chat_id=chat_id,
+            moderator_user_id=moderator.user_id,
+            target_user_id=target.user_id,
+        )
+
+        deleted_count = 0
+        failed_count = 0
+        scanned_count = 0
+        before_message_id: int | None = None
+        remaining = count
+
+        while True:
+            batch_limit = CLEANUP_BATCH_SIZE if delete_all else min(CLEANUP_BATCH_SIZE, remaining or 0)
+            if batch_limit <= 0:
+                break
+
+            refs = await self.message_refs_repo.list_user_message_refs(
+                chat_id=chat_id,
+                sender_user_id=target.user_id,
+                limit=batch_limit,
+                before_message_id=before_message_id,
+            )
+            if not refs:
+                break
+
+            scanned_count += len(refs)
+            before_message_id = refs[-1].message_id
+
+            for ref in refs:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=ref.message_id)
+                except TelegramAPIError as exc:
+                    failed_count += 1
+                    self.logger.debug(
+                        "Could not delete message %s from user %s in chat %s: %s",
+                        ref.message_id,
+                        target.user_id,
+                        chat_id,
+                        exc,
+                    )
+                    continue
+
+                deleted_count += 1
+                await self.message_refs_repo.delete_message_ref(chat_id=chat_id, message_id=ref.message_id)
+
+            if not delete_all:
+                remaining = (remaining or 0) - len(refs)
+                if remaining <= 0:
+                    break
+
+        await self._record_cleanup(
+            chat_id=chat_id,
+            moderator=moderator,
+            target=target,
+            requested_count=count,
+            delete_all=delete_all,
+            deleted_count=deleted_count,
+            failed_count=failed_count,
+            scanned_count=scanned_count,
+        )
+
+        return ActionResult(
+            message=self.message_service.cleanup_result(
+                target,
+                requested_count=count,
+                delete_all=delete_all,
+                deleted_count=deleted_count,
+                failed_count=failed_count,
+                scanned_count=scanned_count,
+            ),
+            category=MessageCategory.MODERATION_RESULT,
+        )
+
     async def get_user_info_message(self, *, chat_id: int, target: ResolvedUser) -> str:
         level = await self._get_public_level(chat_id, target.user_id)
         active_mute = await self.mutes_repo.get_active_mute(chat_id, target.user_id)
@@ -507,6 +600,53 @@ class ModerationService:
             retry=self.config.retry,
             context=f"verify-mute:{mute.chat_id}:{mute.user_id}",
         )
+
+    async def _record_cleanup(
+        self,
+        *,
+        chat_id: int,
+        moderator: ResolvedUser,
+        target: ResolvedUser,
+        requested_count: int | None,
+        delete_all: bool,
+        deleted_count: int,
+        failed_count: int,
+        scanned_count: int,
+    ) -> None:
+        reason = f"Удаление сообщений: удалено {deleted_count}, не удалено {failed_count}"
+        extra_data = {
+            "mode": "all" if delete_all else "count",
+            "requested_count": requested_count,
+            "deleted_count": deleted_count,
+            "failed_count": failed_count,
+            "scanned_count": scanned_count,
+        }
+        async with self.database.transaction() as connection:
+            await self.users_repo.upsert_user(
+                user_id=target.user_id,
+                username=target.username,
+                display_name=target.display_name,
+                first_name=None,
+                last_name=None,
+                last_seen_chat_id=chat_id,
+                connection=connection,
+            )
+            await self.punishments_repo.add_entry(
+                chat_id=chat_id,
+                target_user_id=target.user_id,
+                target_username=target.username,
+                target_display_name=target.display_name,
+                moderator_user_id=moderator.user_id,
+                moderator_username=moderator.username,
+                moderator_display_name=moderator.display_name,
+                action_type=ActionType.CLEANUP.value,
+                reason=reason,
+                duration_seconds=None,
+                mute_until=None,
+                is_active=False,
+                extra_data_json=json.dumps(extra_data, ensure_ascii=False),
+                connection=connection,
+            )
 
     async def _compensate_unmute(self, *, bot: Bot, chat_id: int, user_id: int) -> None:
         try:

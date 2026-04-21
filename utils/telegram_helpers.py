@@ -48,6 +48,14 @@ def member_has_restrict_rights(member: ChatMember | None) -> bool:
     return bool(getattr(member, "can_restrict_members", False))
 
 
+def member_has_delete_rights(member: ChatMember | None) -> bool:
+    if member is None:
+        return False
+    if is_owner_member(member):
+        return True
+    return bool(getattr(member, "can_delete_messages", False))
+
+
 def build_restrictive_permissions() -> ChatPermissions:
     return ChatPermissions(
         can_send_messages=False,

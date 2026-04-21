@@ -66,6 +66,7 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("• <code>мут</code> / <code>м</code> — выдать мут", help_text)
         self.assertIn("• <code>повысить</code>", help_text)
         self.assertIn("• <code>бан</code> — заблокировать пользователя", help_text)
+        self.assertIn("• <code>очистить</code> / <code>удалить</code> — удалить сообщения пользователя", help_text)
 
     def test_help_message_is_filtered_by_level(self) -> None:
         level_one_help = self.service.help_message(1)
@@ -133,7 +134,7 @@ class MessageServiceTests(unittest.TestCase):
 
 
 class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bot_reply_is_not_scheduled_for_auto_delete(self) -> None:
+    async def test_transient_bot_reply_is_scheduled_for_auto_delete(self) -> None:
         service = MessageService(build_config())
         sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=123)
         message = SimpleNamespace(answer=AsyncMock(return_value=sent))
@@ -149,9 +150,10 @@ class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, sent)
         message.answer.assert_awaited_once_with("test")
-        create_task_mock.assert_not_called()
+        create_task_mock.assert_called_once()
+        create_task_mock.call_args.args[0].close()
 
-    async def test_bot_send_to_chat_is_not_scheduled_for_auto_delete(self) -> None:
+    async def test_persistent_bot_send_to_chat_is_not_scheduled_for_auto_delete(self) -> None:
         service = MessageService(build_config())
         sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=124)
         bot = SimpleNamespace(send_message=AsyncMock(return_value=sent))

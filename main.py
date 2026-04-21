@@ -82,6 +82,7 @@ async def build_services(config: AppConfig) -> tuple[Database, ServiceContainer]
         punishments_repo=punishments_repo,
         users_repo=users_repo,
         message_service=message_service,
+        message_refs_repo=message_refs_repo,
     )
     scheduler_service = SchedulerService(
         config=config,
