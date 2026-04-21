@@ -84,6 +84,52 @@ class CleanupParserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.parser = ParserService()
 
+    def test_parse_cleanup_accepts_flexible_count_order(self) -> None:
+        cases = [
+            ("очистить @user 50", 50, "user"),
+            ("очистить 50 @user", 50, "user"),
+            ("удалить @user 25", 25, "user"),
+            ("удалить 25 @user", 25, "user"),
+        ]
+        for text, expected_count, expected_username in cases:
+            with self.subTest(text=text):
+                parsed = self.parser.parse(text, has_reply=False)
+                self.assertEqual(parsed.kind, CommandKind.CLEANUP)
+                self.assertEqual(parsed.cleanup_count, expected_count)
+                self.assertFalse(parsed.cleanup_all)
+                self.assertEqual(parsed.explicit_target.username, expected_username)
+
+    def test_parse_cleanup_accepts_flexible_all_order(self) -> None:
+        cases = [
+            "очистить все @user",
+            "очистить всё @user",
+            "очистить вся @user",
+            "очистить @user все",
+            "очистить @user всё",
+            "очистить @user вся",
+            "удалить все @user",
+            "удалить всё @user",
+            "удалить @user все",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                parsed = self.parser.parse(text, has_reply=False)
+                self.assertEqual(parsed.kind, CommandKind.CLEANUP)
+                self.assertTrue(parsed.cleanup_all)
+                self.assertIsNone(parsed.cleanup_count)
+                self.assertEqual(parsed.explicit_target.username, "user")
+
+    def test_parse_reply_cleanup_uses_reply_target_later(self) -> None:
+        count_parsed = self.parser.parse("очистить 50", has_reply=True)
+        self.assertEqual(count_parsed.kind, CommandKind.CLEANUP)
+        self.assertEqual(count_parsed.cleanup_count, 50)
+        self.assertIsNone(count_parsed.explicit_target)
+
+        all_parsed = self.parser.parse("удалить всё", has_reply=True)
+        self.assertEqual(all_parsed.kind, CommandKind.CLEANUP)
+        self.assertTrue(all_parsed.cleanup_all)
+        self.assertIsNone(all_parsed.explicit_target)
+
     def test_parse_cleanup_count_without_target(self) -> None:
         parsed = self.parser.parse("очистить 50", has_reply=False)
         self.assertEqual(parsed.kind, CommandKind.CLEANUP)
@@ -111,14 +157,18 @@ class CleanupParserTests(unittest.TestCase):
         self.assertFalse(parsed.cleanup_all)
 
     def test_parse_cleanup_rejects_too_large_count(self) -> None:
-        with self.assertRaises(ParseCommandError):
-            self.parser.parse("очистить 101", has_reply=False)
+        with self.assertRaises(ParseCommandError) as context:
+            self.parser.parse("очистить 101 @User", has_reply=False)
+        self.assertIn("100", context.exception.user_message)
+        self.assertNotIn("Неверный формат", context.exception.user_message)
 
     def test_parse_cleanup_rejects_zero_and_negative_counts(self) -> None:
-        with self.assertRaises(ParseCommandError):
+        with self.assertRaises(ParseCommandError) as zero_context:
             self.parser.parse("очистить 0 @User", has_reply=False)
-        with self.assertRaises(ParseCommandError):
+        self.assertIn("от <b>1</b> до <b>100</b>", zero_context.exception.user_message)
+        with self.assertRaises(ParseCommandError) as negative_context:
             self.parser.parse("очистить -1 @User", has_reply=False)
+        self.assertIn("от <b>1</b> до <b>100</b>", negative_context.exception.user_message)
 
 
 class CleanupPermissionAndServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -273,6 +323,7 @@ class CleanupPermissionAndServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(bot.delete_calls, [(self.chat_id, 30), (self.chat_id, 20)])
         self.assertIn("удалено: <b>2</b>", result.message)
+        self.assertIn("Moderator", result.message)
         self.assertIsNone(await self.message_refs_repo.get_message_ref(chat_id=self.chat_id, message_id=30))
         self.assertIsNotNone(await self.message_refs_repo.get_message_ref(chat_id=self.chat_id, message_id=10))
 
@@ -314,6 +365,7 @@ class CleanupPermissionAndServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(bot.delete_calls, [(self.chat_id, 20), (self.chat_id, 10)])
         self.assertIn("все доступные сообщения", result.message)
+        self.assertIn("Moderator", result.message)
         history = await self.punishments_repo.list_user_history(chat_id=self.chat_id, target_user_id=self.target.user_id, limit=5)
         self.assertTrue(history)
         self.assertEqual(history[0].action_type, ActionType.CLEANUP.value)

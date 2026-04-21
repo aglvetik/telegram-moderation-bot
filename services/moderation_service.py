@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -225,7 +225,7 @@ class ModerationService:
                 await self._compensate_remute(bot=bot, chat_id=chat_id, user_id=target.user_id, ends_at=existing.ends_at)
             raise DatabaseOperationError("❌ Не удалось обновить базу данных после снятия мута.") from exc
 
-        return ActionResult(message=self.message_service.unmute_success(target))
+        return ActionResult(message=self.message_service.unmute_success(target, moderator))
 
     async def kick(
         self,
@@ -421,7 +421,7 @@ class ModerationService:
             if existing:
                 await self._compensate_reban(bot=bot, chat_id=chat_id, user_id=target.user_id, ends_at=existing.ends_at)
             raise DatabaseOperationError("❌ Не удалось обновить базу данных после разбана.") from exc
-        return ActionResult(message=self.message_service.unban_success(target))
+        return ActionResult(message=self.message_service.unban_success(target, moderator))
 
     async def cleanup_messages(
         self,
@@ -501,6 +501,7 @@ class ModerationService:
         return ActionResult(
             message=self.message_service.cleanup_result(
                 target,
+                moderator,
                 requested_count=count,
                 delete_all=delete_all,
                 deleted_count=deleted_count,

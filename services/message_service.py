@@ -36,7 +36,7 @@ class MessageService:
         category: MessageCategory,
     ) -> Message:
         sent = await message.answer(text)
-        self._schedule_auto_delete(bot=bot, message=sent, category=category)
+        self._schedule_auto_delete(bot=bot, message=sent, category=category, source_message=message)
         return sent
 
     async def send_to_chat(
@@ -51,17 +51,34 @@ class MessageService:
         self._schedule_auto_delete(bot=bot, message=sent, category=category)
         return sent
 
-    def _schedule_auto_delete(self, *, bot: Bot, message: Message, category: MessageCategory) -> None:
+    def _schedule_auto_delete(
+        self,
+        *,
+        bot: Bot,
+        message: Message,
+        category: MessageCategory,
+        source_message: Message | None = None,
+    ) -> None:
         if category not in AUTO_DELETE_MESSAGE_CATEGORIES:
             return
+        delay_seconds = self.config.message_policy.ordinary_message_delete_seconds
         asyncio.create_task(
             delete_message_later(
                 bot,
                 message,
-                delay_seconds=self.config.message_policy.ordinary_message_delete_seconds,
+                delay_seconds=delay_seconds,
                 logger=self.logger,
             )
         )
+        if source_message is not None:
+            asyncio.create_task(
+                delete_message_later(
+                    bot,
+                    source_message,
+                    delay_seconds=delay_seconds,
+                    logger=self.logger,
+                )
+            )
 
     async def maybe_delete_command(self, *, bot: Bot, message: Message) -> None:
         if not self.config.message_policy.delete_command_messages:
@@ -279,10 +296,11 @@ class MessageService:
             f"Ограничение действует {'бессрочно' if remaining_seconds is None else f'ещё {humanize_duration(max(remaining_seconds, 60))}'}."
         )
 
-    def unmute_success(self, target: ResolvedUser) -> str:
+    def unmute_success(self, target: ResolvedUser, moderator: ResolvedUser) -> str:
         return (
             f"✅ Пользователю {self.user_link(target)} вернули право слова.\n"
-            "Снова можно общаться свободно."
+            "Снова можно общаться свободно.\n"
+            f"👺 Модератор: {self.user_link(moderator)}"
         )
 
     def kick_success(self, target: ResolvedUser, moderator: ResolvedUser) -> str:
@@ -297,17 +315,24 @@ class MessageService:
             f"👺 Модератор: {self.user_link(moderator)}"
         )
 
-    def unban_success(self, target: ResolvedUser) -> str:
+    def unban_success(self, target: ResolvedUser, moderator: ResolvedUser) -> str:
         return (
             f"✅ Пользователь {self.user_link(target)} удалён из чёрного списка.\n"
-            "Теперь он может снова присоединиться к чату."
+            "Теперь он может снова присоединиться к чату.\n"
+            f"👺 Модератор: {self.user_link(moderator)}"
         )
 
-    def level_assigned(self, target: ResolvedUser, level: int) -> str:
-        return f"🛡 Пользователю {self.user_link(target)} назначен уровень модерации <b>{level}</b>."
+    def level_assigned(self, target: ResolvedUser, level: int, moderator: ResolvedUser) -> str:
+        return (
+            f"🛡 Пользователю {self.user_link(target)} назначен уровень модерации <b>{level}</b>.\n"
+            f"👺 Модератор: {self.user_link(moderator)}"
+        )
 
-    def level_removed(self, target: ResolvedUser) -> str:
-        return f"✅ У пользователя {self.user_link(target)} снят внутренний уровень модерации."
+    def level_removed(self, target: ResolvedUser, moderator: ResolvedUser) -> str:
+        return (
+            f"✅ У пользователя {self.user_link(target)} снят внутренний уровень модерации.\n"
+            f"👺 Модератор: {self.user_link(moderator)}"
+        )
 
     def level_info(self, target: ResolvedUser, level: int) -> str:
         del target
@@ -487,6 +512,7 @@ class MessageService:
     def cleanup_result(
         self,
         target: ResolvedUser,
+        moderator: ResolvedUser,
         *,
         requested_count: int | None,
         delete_all: bool,
@@ -502,7 +528,8 @@ class MessageService:
         if scanned_count == 0:
             return (
                 f"🧹 Сообщения пользователя {self.user_link(target)} не найдены среди доступных для удаления записей.\n"
-                "Бот может удалять только сообщения из этого чата, которые он уже видел и сохранил в локальной истории."
+                "Бот может удалять только сообщения из этого чата, которые он уже видел и сохранил в локальной истории.\n"
+                f"👺 Модератор: {self.user_link(moderator)}"
             )
 
         lines = [
@@ -514,4 +541,5 @@ class MessageService:
             lines.append(f"• не удалось удалить: <b>{failed_count}</b>")
         if requested_count is not None and scanned_count < requested_count:
             lines.append(f"• найдено доступных сообщений: <b>{scanned_count}</b>")
+        lines.append(f"👺 Модератор: {self.user_link(moderator)}")
         return "\n".join(lines)

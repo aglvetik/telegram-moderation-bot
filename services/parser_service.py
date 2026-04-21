@@ -224,6 +224,9 @@ class ParserService:
         )
 
     def _parse_cleanup(self, arguments: list[str], normalized: str, *, has_reply: bool) -> ParsedCommand:
+        # Reply targets are intentionally resolved later by UserResolutionService.
+        # If both reply and explicit target are present, that service accepts the
+        # same user and rejects conflicting targets.
         del has_reply
         target_indexes: list[int] = []
         cleanup_count: int | None = None
@@ -236,11 +239,7 @@ class ParserService:
 
             if lowered in CLEANUP_ALL_TOKENS:
                 if cleanup_all or cleanup_count is not None:
-                    raise self._invalid_format(
-                        "Укажите только один режим очистки: количество сообщений или «все».",
-                        "очистить @user 50",
-                        "очистить @user все",
-                    )
+                    raise self._cleanup_duplicate_mode_error()
                 cleanup_all = True
                 continue
 
@@ -248,27 +247,15 @@ class ParserService:
             if numeric_value is not None:
                 if 1 <= numeric_value <= CLEANUP_MAX_MESSAGES:
                     if cleanup_all or cleanup_count is not None:
-                        raise self._invalid_format(
-                            "Укажите только одно количество сообщений для удаления.",
-                            "очистить @user 50",
-                            "удалить 50 @user",
-                        )
+                        raise self._cleanup_duplicate_mode_error()
                     cleanup_count = numeric_value
                     continue
                 if numeric_value <= 0:
-                    raise self._invalid_format(
-                        "Количество сообщений должно быть от 1 до 100.",
-                        "очистить @user 10",
-                        "очистить @user все",
-                    )
+                    raise self._cleanup_invalid_count_error()
                 if self._is_probable_user_id(stripped):
                     target_indexes.append(index)
                     continue
-                raise self._invalid_format(
-                    "За один раз можно удалить не больше 100 сообщений. Для полной очистки используйте «все».",
-                    "очистить @user 100",
-                    "очистить @user все",
-                )
+                raise self._cleanup_count_too_large_error()
 
             if self._looks_like_target(stripped):
                 target_indexes.append(index)
@@ -279,12 +266,7 @@ class ParserService:
         if len(target_indexes) > 1:
             raise self._ambiguous_target_error()
         if unknown_indexes:
-            raise self._invalid_format(
-                "Для очистки укажите пользователя и режим: количество сообщений или «все».",
-                "очистить @user 50",
-                "очистить 50 @user",
-                "очистить @user все",
-            )
+            raise self._cleanup_unrecognized_arguments_error()
 
         explicit_target = self._parse_target(arguments[target_indexes[0]]) if target_indexes else None
         return ParsedCommand(
@@ -608,6 +590,29 @@ class ParserService:
             "❌ Команда получилась неоднозначной.\n"
             f"Число <code>{token}</code> может означать и уровень, и user_id.\n"
             "Укажите цель явно через reply, @username или полный user_id рядом с уровнем."
+        )
+
+    @staticmethod
+    def _cleanup_duplicate_mode_error() -> ParseCommandError:
+        return ParseCommandError(
+            "⚠️ Укажите только один режим очистки: количество сообщений или <code>все</code>."
+        )
+
+    @staticmethod
+    def _cleanup_invalid_count_error() -> ParseCommandError:
+        return ParseCommandError("⚠️ Количество сообщений должно быть от <b>1</b> до <b>100</b>.")
+
+    @staticmethod
+    def _cleanup_count_too_large_error() -> ParseCommandError:
+        return ParseCommandError(
+            "⚠️ За один раз можно удалить не больше <b>100</b> сообщений. "
+            "Для полной очистки доступных сообщений используйте <code>все</code>."
+        )
+
+    @staticmethod
+    def _cleanup_unrecognized_arguments_error() -> ParseCommandError:
+        return ParseCommandError(
+            "⚠️ Для очистки укажите пользователя и режим: количество сообщений или <code>все</code>."
         )
 
     @staticmethod

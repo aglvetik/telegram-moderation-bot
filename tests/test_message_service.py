@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import unittest
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 
 from config import AppConfig, BackupConfig, DatabaseConfig, MessagePolicyConfig, RetryConfig, SchedulerConfig
 from services.message_service import MessageService
 from services.user_resolution_service import ResolvedUser
 from utils.constants import MessageCategory
+from utils.telegram_helpers import delete_message_later
 
 
 def build_config() -> AppConfig:
@@ -50,6 +53,28 @@ class MessageServiceTests(unittest.TestCase):
         self.assertIn("бессрочно", mute_text)
         already_text = self.service.mute_already_active(self.user, None)
         self.assertIn("бессрочно", already_text)
+
+    def test_moderation_result_messages_include_actor(self) -> None:
+        moderator = ResolvedUser(user_id=2, username="mod", display_name="Moderator")
+        self.assertIn("Moderator", self.service.mute_success(self.user, moderator, 3600, "Флуд"))
+        self.assertIn("Moderator", self.service.unmute_success(self.user, moderator))
+        self.assertIn("Moderator", self.service.kick_success(self.user, moderator))
+        self.assertIn("Moderator", self.service.ban_success(self.user, moderator))
+        self.assertIn("Moderator", self.service.unban_success(self.user, moderator))
+        self.assertIn("Moderator", self.service.level_assigned(self.user, 3, moderator))
+        self.assertIn("Moderator", self.service.level_removed(self.user, moderator))
+        self.assertIn(
+            "Moderator",
+            self.service.cleanup_result(
+                self.user,
+                moderator,
+                requested_count=10,
+                delete_all=False,
+                deleted_count=5,
+                failed_count=0,
+                scanned_count=5,
+            ),
+        )
 
     def test_private_start_message_matches_expected_sections(self) -> None:
         text = self.service.private_start()
@@ -134,10 +159,10 @@ class MessageServiceTests(unittest.TestCase):
 
 
 class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_transient_bot_reply_is_scheduled_for_auto_delete(self) -> None:
+    async def test_transient_bot_reply_and_source_message_are_scheduled_for_auto_delete(self) -> None:
         service = MessageService(build_config())
         sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=123)
-        message = SimpleNamespace(answer=AsyncMock(return_value=sent))
+        message = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=11, answer=AsyncMock(return_value=sent))
         bot = SimpleNamespace()
 
         with patch("services.message_service.asyncio.create_task") as create_task_mock:
@@ -150,8 +175,9 @@ class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, sent)
         message.answer.assert_awaited_once_with("test")
-        create_task_mock.assert_called_once()
-        create_task_mock.call_args.args[0].close()
+        self.assertEqual(create_task_mock.call_count, 2)
+        for call in create_task_mock.call_args_list:
+            call.args[0].close()
 
     async def test_persistent_bot_send_to_chat_is_not_scheduled_for_auto_delete(self) -> None:
         service = MessageService(build_config())
@@ -169,6 +195,38 @@ class MessageServiceSendingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, sent)
         bot.send_message.assert_awaited_once_with(-1001, "test")
         create_task_mock.assert_not_called()
+
+    async def test_persistent_reply_does_not_schedule_source_message_delete(self) -> None:
+        service = MessageService(build_config())
+        sent = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=125)
+        message = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=12, answer=AsyncMock(return_value=sent))
+        bot = SimpleNamespace()
+
+        with patch("services.message_service.asyncio.create_task") as create_task_mock:
+            await service.reply(
+                bot=bot,
+                message=message,
+                text="cleanup result",
+                category=MessageCategory.MODERATION_RESULT,
+            )
+
+        create_task_mock.assert_not_called()
+
+    async def test_delete_message_later_swallows_telegram_failures(self) -> None:
+        bot = SimpleNamespace(
+            delete_message=AsyncMock(side_effect=TelegramAPIError(method=None, message="delete failed"))
+        )
+        message = SimpleNamespace(chat=SimpleNamespace(id=-1001), message_id=777)
+
+        with patch("utils.telegram_helpers.asyncio.sleep", new=AsyncMock()):
+            await delete_message_later(
+                bot,
+                message,
+                delay_seconds=1,
+                logger=logging.getLogger("tests.message_service"),
+            )
+
+        bot.delete_message.assert_awaited_once_with(chat_id=-1001, message_id=777)
 
 
 if __name__ == "__main__":

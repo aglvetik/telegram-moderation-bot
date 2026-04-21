@@ -75,6 +75,7 @@ async def handle_admin_levels(message: Message, bot: Bot, services: ServiceConta
         return
 
     if parsed.kind in {CommandKind.SET_LEVEL, CommandKind.RAISE_LEVEL, CommandKind.LOWER_LEVEL}:
+        moderator = services.users.build_actor(message.from_user)
         level = await services.permissions.mutate_level(
             bot=bot,
             chat_id=message.chat.id,
@@ -86,12 +87,13 @@ async def handle_admin_levels(message: Message, bot: Bot, services: ServiceConta
         await services.messages.reply(
             bot=bot,
             message=message,
-            text=services.messages.level_assigned(target, level),
+            text=services.messages.level_assigned(target, level, moderator),
             category=MessageCategory.MODERATION_RESULT,
         )
         await services.messages.maybe_delete_command(bot=bot, message=message)
         return
 
+    moderator = services.users.build_actor(message.from_user)
     await services.permissions.remove_level(
         bot=bot,
         chat_id=message.chat.id,
@@ -101,7 +103,7 @@ async def handle_admin_levels(message: Message, bot: Bot, services: ServiceConta
     await services.messages.reply(
         bot=bot,
         message=message,
-        text=services.messages.level_removed(target),
+        text=services.messages.level_removed(target, moderator),
         category=MessageCategory.MODERATION_RESULT,
     )
     await services.messages.maybe_delete_command(bot=bot, message=message)
